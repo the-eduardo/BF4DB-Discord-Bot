@@ -1,211 +1,203 @@
 package main
 
 import (
-	"encoding/json"
+	"flag"
 	"fmt"
-	"io"
-	"net/http"
+	"github.com/bwmarrin/discordgo"
+	"log"
 	"os"
-	"time"
+	"os/signal"
 )
 
-const (
-	api string = "774ac7a96e83ae855b604ca5799f0cbff93c115713c9916d059c2917e106f5dc"
-)
+// var (
+// OwnBotToken = flag.String("token", "MTAyNzAxNTA0MTMyNjc4ODY1OQ.GJwoNR.nE2aooUvbe-qdQxUrG90iSKxV8ERtKpRj02E1M", "Bot token")
+// AppID    = flag.String("app", "1027015041326788659", "Application ID")
+// ChannelID = flag.String("ChannelID, "1025394880740073572", "Channel ID")
+// ChannelID = "1025394880740073572"
+// )
 
+// Bot parameters
 var (
-	wanted      = "_"
-	playerFound = false
-	IsDebug     = false
+	GuildID        = flag.String("guild", "", "Test guild ID. If not passed - bot registers commands globally")
+	BotToken       = flag.String("token", "MTAyNzAxNTA0MTMyNjc4ODY1OQ.GJwoNR.nE2aooUvbe-qdQxUrG90iSKxV8ERtKpRj02E1M", "Bot access token")
+	RemoveCommands = flag.Bool("rmcmd", true, "Remove all commands after shutdowning or not")
 )
 
-type BFDBAPI struct {
-	Data []struct {
-		Name       string    `json:"name"`
-		IsBanned   int       `json:"is_banned"`
-		BanReason  string    `json:"ban_reason"`
-		CheatScore int       `json:"cheat_score"`
-		CreatedAt  time.Time `json:"created_at"`
-		UpdatedAt  time.Time `json:"updated_at"`
-		ID         int       `json:"id"`
-	} `json:"data"`
-	Links struct {
-		First string      `json:"first"`
-		Last  string      `json:"last"`
-		Prev  interface{} `json:"prev"`
-		Next  interface{} `json:"next"`
-	} `json:"links"`
-	Meta struct {
-		CurrentPage int    `json:"current_page"`
-		From        int    `json:"from"`
-		LastPage    int    `json:"last_page"`
-		Path        string `json:"path"`
-		PerPage     int    `json:"per_page"`
-		To          int    `json:"to"`
-		Total       int    `json:"total"`
-	} `json:"meta"`
+var s *discordgo.Session
+
+func init() { flag.Parse() }
+
+func init() {
+	var err error
+	s, err = discordgo.New("Bot " + *BotToken)
+	if err != nil {
+		log.Fatalf("Invalid bot parameters: %v", err)
+	}
 }
 
-// G "https://bf4db.com/api/player/", "discordAccount/discord?api_token=", api
+var (
+	integerOptionMinValue          = 1.0
+	dmPermission                   = false
+	defaultMemberPermissions int64 = discordgo.PermissionManageServer
 
-type BFDiscord struct {
-	Data []struct {
-		PlayerId   int       `json:"player_id"`
-		Name       string    `json:"name"`
-		IsBanned   int       `json:"is_banned"`
-		BanReason  string    `json:"ban_reason"`
-		EaGuid     string    `json:"ea_guid"`
-		PbGuid     string    `json:"pb_guid"`
-		CheatScore int       `json:"cheat_score"`
-		CreatedAt  time.Time `json:"created_at"`
-		UpdatedAt  time.Time `json:"updated_at"`
-	} `json:"data"`
-	UpdatedAt time.Time `json:"updated_at"`
+	commands = []*discordgo.ApplicationCommand{
+		{
+			Name: "basic-command",
+			// All commands and options must have a description
+			// Commands/options without description will fail the registration
+			// of the command.
+			Description: "Basic command",
+		},
+		{
+			Name:        "bf4db",
+			Description: "Command for searching players in BF4DB",
+			Options: []*discordgo.ApplicationCommandOption{
+
+				// Required options must be listed first since optional parameters
+				// always come after when they're used.
+				// The same concept applies to Discord's Slash-commands API
+
+				{
+					Type:        discordgo.ApplicationCommandOptionUser,
+					Name:        "discord-user",
+					Description: "Search for players linked to a Discord User",
+					Required:    false,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "global-search",
+					Description: "Search players globally on BF4",
+					Required:    false,
+				},
+			},
+		},
+	}
+
+	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
+		"basic-command": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "Hey there! Congratulations, you just executed your first slash command",
+				},
+			})
+		},
+		"bf4db": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			// Access options in the order provided by the user.
+			options := i.ApplicationCommandData().Options
+
+			// Or convert the slice into a map
+			optionMap := make(map[string]*discordgo.ApplicationCommandInteractionDataOption, len(options))
+			for _, opt := range options {
+				optionMap[opt.Name] = opt
+			}
+
+			// This example stores the provided arguments in an []interface{}
+			// which will be used to format the bot's response
+			margs := make([]interface{}, 0, len(options))
+			msgformat := ""
+
+			// Get the value from the option map.
+			// When the option exists, ok = true
+			if option, ok := optionMap["global-search"]; ok {
+				// Option values must be type asserted from interface{}.
+				// Discordgo provides utility functions to make this simple.
+				margs = append(margs, option.StringValue())
+				msgformat += "> Searching for: %s\n"
+				results := GeneralSearch(option.StringValue())
+				for _, v := range results.Data {
+					chScore := fmt.Sprintf("%d", v.CheatScore)
+					msgformat += v.Name + "\t| Status: " + v.BanReason + " | Cheat Score: " + chScore
+					bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.ID)
+					msgformat += " | " + bf4dbLink + "\n"
+
+				}
+			}
+
+			if opt, ok := optionMap["discord-user"]; ok {
+				margs = append(margs, opt.UserValue(nil).ID) // Here we call the BFDB
+				fmt.Println("Requested user:", opt.UserValue(nil).ID)
+				dcResults := DCSearch(opt.UserValue(nil).ID)
+				fmt.Println("Discord Results:", dcResults)
+
+				msgformat += "> Usuario: <@%s> | Contas do Player:\n"
+				for _, v := range dcResults.Data {
+					chScore := fmt.Sprintf("%d", v.CheatScore)
+					msgformat += v.Name + "\t| Status: " + v.BanReason + " | Cheat Score: " + chScore
+					bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.PlayerId)
+					msgformat += " | " + bf4dbLink + "\n"
+				}
+				//margs = append(margs, dcResults)
+				//msgformat += "> user-option: %s\n"
+
+			}
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				// Ignore type for now, they will be discussed in "responses"
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: fmt.Sprintf(
+						msgformat,
+						margs...,
+					),
+				},
+			})
+		},
+	}
+)
+
+func init() {
+	s.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		if h, ok := commandHandlers[i.ApplicationCommandData().Name]; ok {
+			h(s, i)
+		}
+	})
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: bf4db <player name>")
-		return
+	s.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
+		log.Printf("Logged in as: %v#%v", s.State.User.Username, s.State.User.Discriminator)
+	})
+	err := s.Open()
+	if err != nil {
+		log.Fatalf("Cannot open the session: %v", err)
 	}
-	player := os.Args[1]
 
-	if len(os.Args) > 2 {
-		if os.Args[2] == "dbg" {
-			IsDebug = true
-		} else if os.Args[2] == "dc" {
-			DiscordSearch(player, wanted)
-			return
+	log.Println("Adding commands...")
+	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))
+	for i, v := range commands {
+		cmd, err := s.ApplicationCommandCreate(s.State.User.ID, *GuildID, v)
+		if err != nil {
+			log.Panicf("Cannot create '%v' command: %v", v.Name, err)
 		}
-	}
-	fmt.Println("Searching for " + player + "\n")
-	GlobalSearch(player, wanted)
-}
-
-func DiscordSearch(player, wanted string) {
-	myUrl := fmt.Sprint("https://bf4db.com/api/player/", player, "discordAccount/discord?api_token=", api)
-	method := "GET"
-
-	client := &http.Client{}
-	req, err := http.NewRequest(method, myUrl, nil)
-
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	var BFDc BFDiscord
-	err = json.Unmarshal(body, &BFDc)
-	if err != nil {
-		fmt.Println("Unmarshal Error", err)
-		if IsDebug { // if debug is enabled, print the response body
-			if err.Error() == "invalid character '<' looking for beginning of value" {
-				fmt.Println(string(body))
-			}
-		}
-		return
-	}
-	if len(BFDc.Data) == 0 {
-		fmt.Println(BFDc.Data, "No player found")
-	}
-	for _, v := range BFDc.Data {
-		fmt.Println(v, "/n")
+		registeredCommands[i] = cmd
 	}
 
-	// Call DiscordMain
-	DiscordMain(BFDBAPI{}, BFDc)
-}
+	defer s.Close()
 
-func GlobalSearch(player, wanted string) {
-	myUrl := fmt.Sprint("https://bf4db.com/api/player/", player, "/search?api_token=", api) // url with API key
-	method := "GET"
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt)
+	log.Println("Press Ctrl+C to exit")
+	<-stop
 
-	client := &http.Client{}
-	req, err := http.NewRequest(method, myUrl, nil)
-
-	if err != nil {
-		fmt.Println("NewRequest Error")
-		return
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		fmt.Println("Do Error")
-		return
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		fmt.Println("ReadAll Error")
-		return
-	}
-
-	var bfdbApi BFDBAPI
-	err = json.Unmarshal(body, &bfdbApi)
-	if err != nil {
-		fmt.Println("Unmarshal Error")
-		if IsDebug { // if debug is enabled, print the response body
-			if err.Error() == "invalid character '<' looking for beginning of value" {
-				fmt.Println(string(body))
-			}
-		}
-		return
-	}
-	if len(bfdbApi.Data) == 0 {
-		if IsDebug {
-			fmt.Println(bfdbApi.Data, "No player found") // FOR DEBUG ONLY
-		}
-		return
-	}
-	// print range of players when > 15
-	if len(bfdbApi.Data) > 15 {
-		fmt.Println("More than 15 players found! Total of", len(bfdbApi.Data), "\n")
-	}
-	for x := range bfdbApi.Data {
-		if bfdbApi.Data[x].BanReason == "" {
-			bfdbApi.Data[x].BanReason = "Under review"
+	if *RemoveCommands {
+		log.Println("Removing commands...")
+		// // We need to fetch the commands, since deleting requires the command ID.
+		// // We are doing this from the returned commands on line 375, because using
+		// // this will delete all the commands, which might not be desirable, so we
+		// // are deleting only the commands that we added.
+		registeredCommands, err := s.ApplicationCommands(s.State.User.ID, *GuildID)
+		if err != nil {
+			log.Fatalf("Could not fetch registered commands: %v", err)
 		}
 
-		if IsDebug == true { // FOR DEBUG ONLY
-			fmt.Println("inside for:", bfdbApi.Data[x])
-			continue
-		}
-		// if is nil, do nothing
-		if a := bfdbApi.Data[x].ID; a == 0 {
-			continue
-		}
-		if wanted != "_" { // FOR DEBUG ONLY
-			if IsDebug == true {
-				fmt.Println("IF wanted:", bfdbApi.Data[x])
-				return
-			}
-			if bfdbApi.Data[x].Name == wanted {
-				playerFound = true
-				fmt.Println("\nFound " + wanted + " on IP " + player + "\n")
-				GlobalSearch(player, "_")
-				return
+		for _, v := range registeredCommands {
+			err := s.ApplicationCommandDelete(s.State.User.ID, *GuildID, v.ID)
+			if err != nil {
+				log.Panicf("Cannot delete '%v' command: %v", v.Name, err)
 			}
 		}
 	}
-}
 
-func DiscordMain(PlayerR BFDBAPI, PlayerD BFDiscord) {
-	if PlayerR.Data != nil {
-		fmt.Println("PlayerR:", PlayerR)
-	}
-
-	if PlayerD.Data != nil {
-		fmt.Println("PlayerD:", PlayerD)
-	}
+	log.Println("Gracefully shutting down.")
 }
