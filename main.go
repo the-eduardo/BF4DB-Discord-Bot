@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/bwmarrin/discordgo"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 )
@@ -102,32 +103,46 @@ var (
 			if option, ok := optionMap["global-search"]; ok {
 				// Option values must be type asserted from interface{}.
 				// Discordgo provides utility functions to make this simple.
-				margs = append(margs, option.StringValue())
-				msgformat += "> Searching for: %s\n\n"
-				results := GeneralSearch(option.StringValue())
-				for _, v := range results.Data {
-					chScore := fmt.Sprintf("%d", v.CheatScore)
-					msgformat += v.Name + "\t|\tStatus: " + v.BanReason + "\t|\tCheat Score: " + chScore
-					bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.ID)
-					pruuDashboard := fmt.Sprint("https://pruuu.app.ezscale.cloud/players?player=", v.Name)
-					msgformat += "\t|\t" + bf4dbLink + "\nPruu:\t" + pruuDashboard + "\n\n"
 
+				target := net.ParseIP(option.StringValue())
+				if target == nil {
+					margs = append(margs, option.StringValue())
+					msgformat += "> Searching for: %s\n\n"
+				} else {
+					msgformat += "> Searching for: (Redacted)\n"
+				}
+
+				if results := GlobalSearch(option.StringValue()); len(results.Data) == 0 {
+					msgformat += "\n**Nenhuma conta encontrada**"
+				} else {
+					for _, v := range results.Data {
+						chScore := fmt.Sprintf("%d", v.CheatScore)
+						msgformat += v.Name + "\t|\tStatus: " + v.BanReason + "\t|\tCheat Score: " + chScore
+						bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.ID)
+						pruuDashboard := fmt.Sprint("https://pruuu.app.ezscale.cloud/players?player=", v.Name)
+						msgformat += "\t|\t" + bf4dbLink + "\nPruu:\t" + pruuDashboard + "\n\n"
+
+					}
 				}
 			}
 
 			if opt, ok := optionMap["discord-user"]; ok {
 				margs = append(margs, opt.UserValue(nil).ID) // Here we call the BFDB
-				fmt.Println("Requested user:", opt.UserValue(nil).ID)
-				dcResults := DCSearch(opt.UserValue(nil).ID)
-				fmt.Println("Discord Results:", dcResults)
+				log.Println("Requested user:", opt.UserValue(nil).ID)
+				dcResults := DiscordSearch(opt.UserValue(nil).ID)
+				log.Println("Discord Results:", dcResults)
 
 				msgformat += "> Usuario: <@%s> | Contas Encontradas:\n"
-				for _, v := range dcResults.Data {
-					chScore := fmt.Sprintf("%d", v.CheatScore)
-					msgformat += v.Name + "\t|\tStatus: " + v.BanReason + "\t|\tCheat Score: " + chScore
-					bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.PlayerId)
-					pruuDashboard := fmt.Sprint("https://pruuu.app.ezscale.cloud/players?player=", v.Name)
-					msgformat += "\t|\t" + bf4dbLink + "\nPruu:\t" + pruuDashboard + "\n\n"
+				if len(dcResults.Data) == 0 {
+					msgformat += "\n**Nenhuma conta encontrada**"
+				} else {
+					for _, v := range dcResults.Data {
+						chScore := fmt.Sprintf("%d", v.CheatScore)
+						msgformat += v.Name + "\t|\tStatus: " + v.BanReason + "\t|\tCheat Score: " + chScore
+						bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.PlayerId)
+						pruuDashboard := fmt.Sprint("https://pruuu.app.ezscale.cloud/players?player=", v.Name)
+						msgformat += "\t|\t" + bf4dbLink + "\nPruu:\t" + pruuDashboard + "\n\n"
+					}
 				}
 				//margs = append(margs, dcResults)
 				//msgformat += "> user-option: %s\n"

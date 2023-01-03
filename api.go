@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	myapi string = "774ac7a96e83ae855b604ca5799f0cbff93c115713c9916d059c2917e106f5dc"
+	api string = "774ac7a96e83ae855b604ca5799f0cbff93c115713c9916d059c2917e106f5dc"
 )
 
-type MYBFDiscord struct {
+type BFDiscord struct {
 	Data []struct {
 		PlayerId   int       `json:"player_id"`
 		Name       string    `json:"name"`
@@ -27,7 +27,7 @@ type MYBFDiscord struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-type BFAPI struct {
+type BFDBAPI struct {
 	Data []struct {
 		Name       string    `json:"name"`
 		IsBanned   int       `json:"is_banned"`
@@ -54,8 +54,8 @@ type BFAPI struct {
 	} `json:"meta"`
 }
 
-func DCSearch(player string) MYBFDiscord {
-	myUrl := fmt.Sprint("https://bf4db.com/api/player/", player, "discordAccount/discord?api_token=", myapi)
+func DiscordSearch(player string) BFDiscord {
+	myUrl := fmt.Sprint("https://bf4db.com/api/player/", player, "discordAccount/discord?api_token=", api)
 	method := "GET"
 
 	client := &http.Client{}
@@ -63,25 +63,25 @@ func DCSearch(player string) MYBFDiscord {
 
 	if err != nil {
 		fmt.Println(err)
-		return MYBFDiscord{}
+		return BFDiscord{}
 	}
 	res, err := client.Do(req)
 	if err != nil {
 		fmt.Println(err)
-		return MYBFDiscord{}
+		return BFDiscord{}
 	}
 	defer res.Body.Close()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		fmt.Println(err)
-		return MYBFDiscord{}
+		return BFDiscord{}
 	}
-	var BFDc MYBFDiscord
+	var BFDc BFDiscord
 	err = json.Unmarshal(body, &BFDc)
 	if err != nil {
 		fmt.Println("Unmarshal Error", err)
-		return MYBFDiscord{}
+		return BFDiscord{}
 	}
 	if len(BFDc.Data) == 0 {
 		fmt.Println(BFDc.Data, "No player found")
@@ -94,8 +94,8 @@ func DCSearch(player string) MYBFDiscord {
 	return BFDc
 }
 
-func GeneralSearch(player string) BFAPI {
-	myUrl := fmt.Sprint("https://bf4db.com/api/player/", player, "/search?api_token=", myapi) // url with API key
+func GlobalSearch(player string) BFDBAPI {
+	myUrl := fmt.Sprint("https://bf4db.com/api/player/", player, "/search?api_token=", api) // url with API key
 	method := "GET"
 
 	client := &http.Client{}
@@ -103,29 +103,29 @@ func GeneralSearch(player string) BFAPI {
 
 	if err != nil {
 		fmt.Println("NewRequest Error")
-		return BFAPI{}
+		return BFDBAPI{}
 	}
 	res, err := client.Do(req)
 	if err != nil {
 		fmt.Println("Do Error")
-		return BFAPI{}
+		return BFDBAPI{}
 	}
 	defer res.Body.Close()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		fmt.Println("ReadAll Error")
-		return BFAPI{}
+		return BFDBAPI{}
 	}
 
-	var bfdbApi BFAPI
+	var bfdbApi BFDBAPI
 	err = json.Unmarshal(body, &bfdbApi)
 	if err != nil {
 		fmt.Println("Unmarshal Error")
-		return BFAPI{}
+		return BFDBAPI{}
 	}
 	if len(bfdbApi.Data) == 0 {
-		return BFAPI{}
+		return BFDBAPI{}
 	}
 
 	for x := range bfdbApi.Data {
