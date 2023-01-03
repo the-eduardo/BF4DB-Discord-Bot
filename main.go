@@ -103,13 +103,14 @@ var (
 				// Option values must be type asserted from interface{}.
 				// Discordgo provides utility functions to make this simple.
 				margs = append(margs, option.StringValue())
-				msgformat += "> Searching for: %s\n"
+				msgformat += "> Searching for: %s\n\n"
 				results := GeneralSearch(option.StringValue())
 				for _, v := range results.Data {
 					chScore := fmt.Sprintf("%d", v.CheatScore)
-					msgformat += v.Name + "\t| Status: " + v.BanReason + " | Cheat Score: " + chScore
+					msgformat += v.Name + "\t|\tStatus: " + v.BanReason + "\t|\tCheat Score: " + chScore
 					bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.ID)
-					msgformat += " | " + bf4dbLink + "\n"
+					pruuDashboard := fmt.Sprint("https://pruuu.app.ezscale.cloud/players?player=", v.Name)
+					msgformat += "\t|\t" + bf4dbLink + "\nPruu:\t" + pruuDashboard + "\n\n"
 
 				}
 			}
@@ -120,12 +121,13 @@ var (
 				dcResults := DCSearch(opt.UserValue(nil).ID)
 				fmt.Println("Discord Results:", dcResults)
 
-				msgformat += "> Usuario: <@%s> | Contas do Player:\n"
+				msgformat += "> Usuario: <@%s> | Contas Encontradas:\n"
 				for _, v := range dcResults.Data {
 					chScore := fmt.Sprintf("%d", v.CheatScore)
-					msgformat += v.Name + "\t| Status: " + v.BanReason + " | Cheat Score: " + chScore
+					msgformat += v.Name + "\t|\tStatus: " + v.BanReason + "\t|\tCheat Score: " + chScore
 					bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.PlayerId)
-					msgformat += " | " + bf4dbLink + "\n"
+					pruuDashboard := fmt.Sprint("https://pruuu.app.ezscale.cloud/players?player=", v.Name)
+					msgformat += "\t|\t" + bf4dbLink + "\nPruu:\t" + pruuDashboard + "\n\n"
 				}
 				//margs = append(margs, dcResults)
 				//msgformat += "> user-option: %s\n"
