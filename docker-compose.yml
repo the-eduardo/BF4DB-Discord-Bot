@@ -1,0 +1,9 @@
+services:
+  bf4db-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bf4-search-bot
+    restart: unless-stopped
+    env_file:
+      - .env

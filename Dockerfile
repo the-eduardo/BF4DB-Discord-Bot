@@ -1,14 +1,23 @@
-# Use an official Go image as the base image
-FROM golang:latest
-# Set the working directory to /app
-RUN mkdir "app"
+# Build Stage
+FROM golang:1.23.4-alpine AS builder
+
+LABEL authors="the-eduardo"
+
 WORKDIR /app
 
-# Copy the files to the container
-COPY . /app
+COPY . .
 
-# Build the Go application
-RUN go build -o dcbot
+RUN go mod tidy
 
-# Run the executable
-CMD ["./dcbot"]
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o /go/bin/app ./...
+
+# Final stage
+FROM arm64v8/alpine:3.19
+
+WORKDIR /app
+
+# Copy only the built binary from the builder stage
+COPY --from=builder /go/bin/app /app/
+
+# Command to run the executable
+CMD ["./app"]
