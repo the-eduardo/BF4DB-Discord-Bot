@@ -8,20 +8,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"time"
 )
 
-// var (
-// OwnBotToken = flag.String("token", "MTAyNzAxNTA0MTMyNjc4ODY1OQ.GJwoNR.nE2aooUvbe-qdQxUrG90iSKxV8ERtKpRj02E1M", "Bot token")
-// AppID    = flag.String("app", "1027015041326788659", "Application ID")
-// ChannelID = flag.String("ChannelID, "1025394880740073572", "Channel ID")
-// ChannelID = "1025394880740073572"
-// )
-
-// Bot parameters
 var (
+	RemoveCommands = flag.Bool("rmcmd", false, "Remove all commands after shutdown or not")
 	GuildID        = flag.String("guild", "", "Test guild ID. If not passed - bot registers commands globally")
-	BotToken       = flag.String("token", "MTAyNzAxNTA0MTMyNjc4ODY1OQ.GJwoNR.nE2aooUvbe-qdQxUrG90iSKxV8ERtKpRj02E1M", "Bot access token")
-	RemoveCommands = flag.Bool("rmcmd", true, "Remove all commands after shutdowning or not")
+	BF4API         = os.Getenv("BF4DB_API")
+	BotToken       = os.Getenv("DISCORD_BOT_TOKEN")
 )
 
 var s *discordgo.Session
@@ -30,7 +24,7 @@ func init() { flag.Parse() }
 
 func init() {
 	var err error
-	s, err = discordgo.New("Bot " + *BotToken)
+	s, err = discordgo.New("Bot " + BotToken)
 	if err != nil {
 		log.Fatalf("Invalid bot parameters: %v", err)
 	}
@@ -43,11 +37,11 @@ var (
 
 	commands = []*discordgo.ApplicationCommand{
 		{
-			Name: "basic-command",
+			Name: "ping",
 			// All commands and options must have a description
 			// Commands/options without description will fail the registration
 			// of the command.
-			Description: "Basic command",
+			Description: "Ping the bot to check ms latency",
 		},
 		{
 			Name:        "bf4db",
@@ -75,14 +69,37 @@ var (
 	}
 
 	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
-		//"basic-command": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		//	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		//		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		//		Data: &discordgo.InteractionResponseData{
-		//			Content: "Hey there! Congratulations, you just executed your first slash command",
-		//		},
-		//	})
-		//},
+		"ping": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			startTime := time.Now()
+
+			// Send initial response
+			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "Testing ping...",
+				},
+			})
+			if err != nil {
+				log.Printf("Error sending initial response: %v", err)
+				return
+			}
+
+			// Calculate response time
+			responseTime := time.Since(startTime).Milliseconds()
+
+			// Get API latency
+			apiLatency := s.HeartbeatLatency().Milliseconds()
+
+			// Edit the response with latency information
+			newMsg := fmt.Sprintf("🏓 Pong!\nAPI: %dms\nBot: %dms", apiLatency, responseTime)
+			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: &newMsg,
+			})
+			if err != nil {
+				log.Printf("Error editing response: %v", err)
+			}
+		},
+
 		"bf4db": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			// Access options in the order provided by the user.
 			options := i.ApplicationCommandData().Options
@@ -112,15 +129,15 @@ var (
 					msgformat += "> Searching for: (Redacted)\n"
 				}
 
-				if results := GlobalSearch(option.StringValue()); len(results.Data) == 0 {
+				if results := GlobalSearch(option.StringValue(), BF4API); len(results.Data) == 0 {
 					msgformat += "\n**Nenhuma conta encontrada**"
 				} else {
 					for _, v := range results.Data {
 						chScore := fmt.Sprintf("%d", v.CheatScore)
 						msgformat += v.Name + "\t|\tStatus: " + v.BanReason + "\t|\tCheat Score: " + chScore
 						bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.ID)
-						pruuDashboard := fmt.Sprint("https://pruuu.app.ezscale.cloud/players?player=", v.Name)
-						msgformat += "\t|\t" + bf4dbLink + "\nPruu:\t" + pruuDashboard + "\n\n"
+						bfAgencyLink := fmt.Sprint("https://battlefield.agency/player/by-persona_id/bf4/", v.ID)
+						msgformat += "\t|\t" + bf4dbLink + "\nBF Agency:\t" + bfAgencyLink + "\n\n"
 
 					}
 				}
@@ -129,7 +146,7 @@ var (
 			if opt, ok := optionMap["discord-user"]; ok {
 				margs = append(margs, opt.UserValue(nil).ID) // Here we call the BFDB
 				log.Println("Requested user:", opt.UserValue(nil).ID)
-				dcResults := DiscordSearch(opt.UserValue(nil).ID)
+				dcResults := DiscordSearch(opt.UserValue(nil).ID, BF4API)
 				log.Println("Discord Results:", dcResults)
 
 				msgformat += "> Usuario: <@%s> | Contas Encontradas:\n"
@@ -140,17 +157,13 @@ var (
 						chScore := fmt.Sprintf("%d", v.CheatScore)
 						msgformat += v.Name + "\t|\tStatus: " + v.BanReason + "\t|\tCheat Score: " + chScore
 						bf4dbLink := fmt.Sprint("https://bf4db.com/player/", v.PlayerId)
-						pruuDashboard := fmt.Sprint("https://pruuu.app.ezscale.cloud/players?player=", v.Name)
-						msgformat += "\t|\t" + bf4dbLink + "\nPruu:\t" + pruuDashboard + "\n\n"
+						bfAgencyLink := fmt.Sprint("https://battlefield.agency/player/by-persona_id/bf4/", v.PlayerId)
+						msgformat += "\t|\t" + bf4dbLink + "\nBF Agency:\t" + bfAgencyLink + "\n\n"
 					}
 				}
-				//margs = append(margs, dcResults)
-				//msgformat += "> user-option: %s\n"
-
 			}
 
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				// Ignore type for now, they will be discussed in "responses"
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
 				Data: &discordgo.InteractionResponseData{
 					Content: fmt.Sprintf(

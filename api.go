@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-const (
-	api string = "774ac7a96e83ae855b604ca5799f0cbff93c115713c9916d059c2917e106f5dc"
-)
-
 type BFDiscord struct {
 	Data []struct {
 		PlayerId   int       `json:"player_id"`
@@ -54,7 +50,7 @@ type BFDBAPI struct {
 	} `json:"meta"`
 }
 
-func DiscordSearch(player string) BFDiscord {
+func DiscordSearch(player, api string) BFDiscord {
 	myUrl := fmt.Sprint("https://bf4db.com/api/player/", player, "discordAccount/discord?api_token=", api)
 	method := "GET"
 
@@ -94,7 +90,7 @@ func DiscordSearch(player string) BFDiscord {
 	return BFDc
 }
 
-func GlobalSearch(player string) BFDBAPI {
+func GlobalSearch(player, api string) BFDBAPI {
 	myUrl := fmt.Sprint("https://bf4db.com/api/player/", player, "/search?api_token=", api) // url with API key
 	method := "GET"
 
