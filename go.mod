@@ -1,8 +1,8 @@
-module Discord-BF4DB
+module github.com/the-eduardo/BF4DB-Discord-Bot
 
-go 1.23
+go 1.26
 
-require github.com/bwmarrin/discordgo v0.28.1
+require github.com/bwmarrin/discordgo v0.29.0
 
 require (
 	github.com/gorilla/websocket v1.5.3 // indirect
