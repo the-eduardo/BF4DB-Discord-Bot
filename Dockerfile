@@ -1,23 +1,30 @@
-# Build Stage
-FROM golang:1.23-alpine AS builder
+# syntax=docker/dockerfile:1
 
-LABEL authors="the-eduardo"
+# Build stage. TARGETARCH comes from buildx, so the same Dockerfile produces
+# amd64 and arm64 images — the old build hardcoded amd64 and would not run on
+# an ARM host.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
-WORKDIR /app
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
 
 COPY . .
-
-RUN go mod tidy
-
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o /go/bin/app ./...
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/bf4db-bot .
 
 # Final stage
-FROM alpine:latest
+FROM alpine:3.21
 
-WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata \
+    && adduser -D -u 10001 bot
 
-# Copy only the built binary from the builder stage
-COPY --from=builder /go/bin/app /app/
+COPY --from=builder /out/bf4db-bot /usr/local/bin/bf4db-bot
 
-# Command to run the executable
-CMD ["./app"]
+USER bot
+ENTRYPOINT ["/usr/local/bin/bf4db-bot"]

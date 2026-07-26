@@ -1,15 +1,22 @@
+# Binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+/bf4db-bot
+/app
 
+# Test binary and coverage
 *.test
-
 *.out
 
 go.work
 go.work.sum
 
+# Secrets
 .env
-.idea/material_theme_project_new.xml
+
+# Editors
+.idea/
+.vscode/
