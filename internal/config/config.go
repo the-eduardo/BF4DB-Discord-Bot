@@ -18,6 +18,8 @@ const (
 	EnvWebURL     = "BF4DB_WEB_URL"
 	EnvLogLevel   = "LOG_LEVEL"
 	EnvNameLimit  = "BF4DB_NAME_LIMIT"
+	EnvKumaPush   = "KUMA_PUSH_URL"
+	EnvIPRoles    = "BF4DB_IP_ROLE_IDS"
 )
 
 // Config is everything the bot needs to run.
@@ -30,6 +32,11 @@ type Config struct {
 	LogLevel   string
 	NameLimit  int
 	Timeout    time.Duration
+
+	// KumaPushURL is the Uptime Kuma dead-man switch; empty disables it.
+	KumaPushURL string
+	// IPRoleIDs may search by IP on top of the server managers.
+	IPRoleIDs []string
 }
 
 // Load reads the environment and fails fast when a required value is missing,
@@ -44,6 +51,9 @@ func Load() (Config, error) {
 		LogLevel:   strings.TrimSpace(os.Getenv(EnvLogLevel)),
 		NameLimit:  15,
 		Timeout:    25 * time.Second,
+
+		KumaPushURL: strings.TrimSpace(os.Getenv(EnvKumaPush)),
+		IPRoleIDs:   splitIDs(os.Getenv(EnvIPRoles)),
 	}
 
 	var missing []string
@@ -65,4 +75,15 @@ func Load() (Config, error) {
 		cfg.NameLimit = n
 	}
 	return cfg, nil
+}
+
+// splitIDs parses a comma-separated list of Discord snowflakes.
+func splitIDs(raw string) []string {
+	var ids []string
+	for part := range strings.SplitSeq(raw, ",") {
+		if id := strings.TrimSpace(part); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }

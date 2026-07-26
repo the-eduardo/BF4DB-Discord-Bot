@@ -62,6 +62,36 @@ func (c *Client) searchNameWeb(ctx context.Context, name string, limit int) ([]P
 	return c.hydrate(ctx, hits), nil
 }
 
+// SuggestNames returns the raw matches for a name straight from the website's
+// search page, without hydrating them through the API.
+//
+// It exists for Discord autocomplete, which must answer within three seconds:
+// one HTML request instead of one request per hit. The records carry only the
+// name, the persona id and whether the site shows a ban badge.
+func (c *Client) SuggestNames(ctx context.Context, name string, limit int) ([]Player, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > webSearchLimit {
+		limit = webSearchLimit
+	}
+
+	u := c.webBaseURL.JoinPath("player", "search")
+	u.RawQuery = url.Values{"query": {name}}.Encode()
+
+	body, err := c.get(ctx, requestOptions{attempts: 1}, u.String())
+	if err != nil {
+		return nil, fmt.Errorf("bf4db: suggesting names through %s: %w", c.webBaseURL.Host, err)
+	}
+
+	hits := parseWebSearch(string(body))
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits, nil
+}
+
 // parseWebSearch extracts the result rows of the website's search page.
 func parseWebSearch(page string) []Player {
 	var (

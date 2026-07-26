@@ -16,6 +16,17 @@ Both options can be used in the same call. Results come back as embeds, colour
 coded by the worst status found, with links to BF4DB, BF4 Cheat Report and
 Battlefield Agency.
 
+- **Autocomplete**: typing a name (3+ characters) suggests matching players,
+  showing who is banned and why. Picking a suggestion searches by persona id,
+  which is exact and instant.
+- **Pagination**: more than 5 accounts get ◀ ▶ buttons instead of a wall of
+  text. The result set is kept for 15 minutes.
+- **Caching**: repeated lookups are served from memory for 5 minutes, so a
+  channel checking the same suspect does not burn the 70 requests/minute quota.
+- **IP searches are restricted** to members who can manage the server, plus any
+  role listed in `BF4DB_IP_ROLE_IDS`. Everyone else gets an ephemeral refusal
+  and no request is made.
+
 Status labels follow BF4DB's `is_banned` codes:
 
 | Code | Label |
@@ -69,6 +80,12 @@ arm64.
 | `BF4DB_NAME_LIMIT` | no | `15` | max name-search hits to look up |
 | `BF4DB_BASE_URL` | no | BF4DB API | override the API root |
 | `BF4DB_WEB_URL` | no | BF4DB site | override the site root |
+| `BF4DB_IP_ROLE_IDS` | no | – | extra roles allowed to search by IP |
+| `KUMA_PUSH_URL` | no | – | Uptime Kuma push monitor (dead-man switch) |
+
+When `KUMA_PUSH_URL` is set the bot pushes every 60s **only while the Discord
+gateway is connected**, so the monitor goes DOWN when the process is up but
+disconnected — the failure a container health check cannot see.
 
 Flags: `-guild <id>` (overrides `DISCORD_GUILD_ID`) and `-rmcmd` to delete the
 registered commands on shutdown.

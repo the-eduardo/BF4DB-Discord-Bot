@@ -5,12 +5,26 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/bf4db"
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/cache"
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/config"
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/kuma"
+)
+
+// Cache budgets. Lookups are cached long enough to absorb a channel checking
+// the same suspect repeatedly; result sets only need to outlive the buttons.
+const (
+	lookupTTL     = 5 * time.Minute
+	lookupMax     = 500
+	suggestionTTL = 60 * time.Second
+	suggestionMax = 200
+	resultTTL     = 15 * time.Minute
+	resultMax     = 200
 )
 
 // Bot is a running Discord bot.
@@ -20,6 +34,14 @@ type Bot struct {
 	log     *slog.Logger
 	guildID string
 	timeout time.Duration
+
+	ipRoleIDs []string
+	pusher    *kuma.Pusher
+	connected atomic.Bool
+
+	lookups     *cache.Cache[[]bf4db.Player]
+	suggestions *cache.Cache[[]*discordgo.ApplicationCommandOptionChoice]
+	results     *cache.Cache[resultSet]
 }
 
 // New builds a bot from validated configuration.
@@ -32,30 +54,54 @@ func New(cfg config.Config, client *bf4db.Client, log *slog.Logger) (*Bot, error
 	session.Identify.Intents = discordgo.IntentsNone
 
 	b := &Bot{
-		session: session,
-		client:  client,
-		log:     log,
-		guildID: cfg.GuildID,
-		timeout: cfg.Timeout,
+		session:     session,
+		client:      client,
+		log:         log,
+		guildID:     cfg.GuildID,
+		timeout:     cfg.Timeout,
+		ipRoleIDs:   cfg.IPRoleIDs,
+		pusher:      kuma.NewPusher(cfg.KumaPushURL, log),
+		lookups:     cache.New[[]bf4db.Player](lookupTTL, lookupMax),
+		suggestions: cache.New[[]*discordgo.ApplicationCommandOptionChoice](suggestionTTL, suggestionMax),
+		results:     cache.New[resultSet](resultTTL, resultMax),
 	}
 
-	handlers := map[string]func(*discordgo.Session, *discordgo.InteractionCreate){
-		"ping":  b.handlePing,
-		"bf4db": b.handleSearch,
-	}
-	session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		if i.Type != discordgo.InteractionApplicationCommand {
-			return
-		}
-		if h, ok := handlers[i.ApplicationCommandData().Name]; ok {
-			h(s, i)
-		}
-	})
+	session.AddHandler(b.route)
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
+		b.connected.Store(true)
 		log.Info("connected", "user", r.User.Username, "id", r.User.ID)
+	})
+	session.AddHandler(func(s *discordgo.Session, r *discordgo.Resumed) {
+		b.connected.Store(true)
+		log.Info("session resumed")
+	})
+	session.AddHandler(func(s *discordgo.Session, d *discordgo.Disconnect) {
+		b.connected.Store(false)
+		log.Warn("gateway disconnected")
 	})
 
 	return b, nil
+}
+
+// route dispatches every interaction type this bot answers. Components and
+// autocomplete share the application with the PunkBuster bot, so anything not
+// recognised is ignored rather than answered.
+func (b *Bot) route(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	switch i.Type {
+	case discordgo.InteractionApplicationCommand:
+		switch i.ApplicationCommandData().Name {
+		case "ping":
+			b.handlePing(s, i)
+		case "bf4db":
+			b.handleSearch(s, i)
+		}
+	case discordgo.InteractionApplicationCommandAutocomplete:
+		if i.ApplicationCommandData().Name == "bf4db" {
+			b.handleAutocomplete(s, i)
+		}
+	case discordgo.InteractionMessageComponent:
+		b.handleComponent(s, i)
+	}
 }
 
 // Run opens the session, registers the commands and blocks until ctx is done.
@@ -65,6 +111,7 @@ func (b *Bot) Run(ctx context.Context, removeCommands bool) error {
 		return fmt.Errorf("opening session: %w", err)
 	}
 	defer func() {
+		b.connected.Store(false)
 		if err := b.session.Close(); err != nil {
 			b.log.Error("closing session", "err", err)
 		}
@@ -76,6 +123,8 @@ func (b *Bot) Run(ctx context.Context, removeCommands bool) error {
 	}
 	b.log.Info("commands registered", "count", len(registered), "scope", scope(b.guildID))
 
+	go b.pusher.Run(ctx, b.liveness)
+
 	<-ctx.Done()
 	b.log.Info("shutting down")
 
@@ -83,6 +132,14 @@ func (b *Bot) Run(ctx context.Context, removeCommands bool) error {
 		b.removeCommands(registered)
 	}
 	return nil
+}
+
+// liveness reports whether the gateway is connected, plus its latency.
+func (b *Bot) liveness() (bool, time.Duration) {
+	if !b.connected.Load() {
+		return false, 0
+	}
+	return true, b.session.HeartbeatLatency()
 }
 
 func (b *Bot) registerCommands() ([]*discordgo.ApplicationCommand, error) {
@@ -123,8 +180,23 @@ func (b *Bot) respond(s *discordgo.Session, i *discordgo.InteractionCreate, embe
 	}
 }
 
+// respondEphemeral answers only the user who interacted.
+func (b *Bot) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content:         content,
+			Flags:           discordgo.MessageFlagsEphemeral,
+			AllowedMentions: &discordgo.MessageAllowedMentions{},
+		},
+	})
+	if err != nil {
+		b.log.Error("responding ephemerally", "err", err)
+	}
+}
+
 // edit completes a deferred interaction.
-func (b *Bot) edit(s *discordgo.Session, i *discordgo.InteractionCreate, embeds []*discordgo.MessageEmbed) {
+func (b *Bot) edit(s *discordgo.Session, i *discordgo.InteractionCreate, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent) {
 	// A deferred interaction must be edited with something; an empty payload is
 	// rejected by Discord and the user is left staring at "thinking…".
 	if len(embeds) == 0 {
@@ -136,6 +208,7 @@ func (b *Bot) edit(s *discordgo.Session, i *discordgo.InteractionCreate, embeds 
 	}
 	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds:          &embeds,
+		Components:      &components,
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	}); err != nil {
 		b.log.Error("editing response", "err", err)
