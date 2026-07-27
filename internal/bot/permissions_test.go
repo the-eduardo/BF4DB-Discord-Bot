@@ -26,7 +26,8 @@ func TestMaySearchIP(t *testing.T) {
 		{"nil member (DM)", nil, false},
 		{"plain member", &discordgo.Member{}, false},
 		{"server manager", &discordgo.Member{Permissions: discordgo.PermissionManageServer}, true},
-		{"administrator carries manage-server", &discordgo.Member{Permissions: discordgo.PermissionManageServer | discordgo.PermissionAdministrator}, true},
+		{"administrator", &discordgo.Member{Permissions: discordgo.PermissionAdministrator}, true},
+		{"administrator with the full computed set", &discordgo.Member{Permissions: discordgo.PermissionAll}, true},
 		{"allowed role", &discordgo.Member{Roles: []string{"role-other", "role-mod"}}, true},
 		{"unrelated role", &discordgo.Member{Roles: []string{"role-other"}}, false},
 	}

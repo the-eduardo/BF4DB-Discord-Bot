@@ -164,12 +164,18 @@ func (b *Bot) paginated(title string, players []bf4db.Player, now time.Time) (*d
 	return embed, paginationComponents(key, 0, len(players))
 }
 
-// maySearchIP allows server managers, plus any role listed in BF4DB_IP_ROLE_IDS.
+// staffPermissions are the permissions that stand in for "staff" here.
+// Discord already folds Administrator into the computed permissions it sends
+// with an interaction, but naming it keeps the intent readable and survives a
+// future change on their side.
+const staffPermissions = discordgo.PermissionAdministrator | discordgo.PermissionManageServer
+
+// maySearchIP allows staff, plus any role listed in BF4DB_IP_ROLE_IDS.
 func (b *Bot) maySearchIP(member *discordgo.Member) bool {
 	if member == nil {
 		return false
 	}
-	if member.Permissions&discordgo.PermissionManageServer != 0 {
+	if member.Permissions&staffPermissions != 0 {
 		return true
 	}
 	for _, roleID := range b.ipRoleIDs {
