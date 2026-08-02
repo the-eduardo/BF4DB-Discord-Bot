@@ -16,6 +16,14 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Teto de recursos: o container ja rodava sem limite nenhum (Memory=0,
+    # PidsLimit ausente), entao um vazamento de goroutine ou um loop no fallback
+    # de scraping podia consumir a memoria do host inteiro. O uso real e' ~6 MiB
+    # e 11 PIDs — os valores abaixo dao ~20x e ~6x de folga. Se o limite for
+    # atingido por um bug real, o container morre e o restart o traz de volta,
+    # contido, em vez de derrubar o host.
+    mem_limit: 128m
+    pids_limit: 64
     logging:
       driver: json-file
       options:
