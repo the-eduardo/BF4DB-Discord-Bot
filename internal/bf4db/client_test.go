@@ -399,6 +399,35 @@ func TestContextCancellationStopsRetries(t *testing.T) {
 	}
 }
 
+func TestRetryStopsWhenDeadlineIsShorterThanBackoff(t *testing.T) {
+	var calls atomic.Int32
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}), WithRetryWait(60*time.Second))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.player(ctx, "12345", requestOptions{})
+	elapsed := time.Since(start)
+
+	if calls.Load() != 1 {
+		t.Errorf("calls = %d, want 1 (no point retrying past the deadline)", calls.Load())
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadGateway {
+		t.Errorf("want wrapped APIError 502, got %v", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("want the real 502, got context.DeadlineExceeded instead")
+	}
+	if elapsed >= time.Second {
+		t.Errorf("took %s, want well under the 60s backoff (deadline check should short-circuit)", elapsed)
+	}
+}
+
 func TestEmptyQueriesRejectedWithoutRequest(t *testing.T) {
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("no request should be made")

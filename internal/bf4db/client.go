@@ -380,6 +380,13 @@ func (c *Client) get(ctx context.Context, opts requestOptions, endpoint string) 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			wait := retryDelay(lastErr, c.retryWait, attempt)
+			// If the caller's deadline can't outlast the backoff, sleeping
+			// only buys ctx.Err() instead of the real failure. Return it now
+			// so a short-lived caller (e.g. autocomplete's 2s budget) gets an
+			// actual error instead of a generic timeout after a dead wait.
+			if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= wait {
+				return nil, lastErr
+			}
 			c.notify("Retrying in %s (attempt %d/%d)", wait.Round(time.Second), attempt+1, maxRetries+1)
 			if err := sleepCtx(ctx, wait); err != nil {
 				return nil, err
