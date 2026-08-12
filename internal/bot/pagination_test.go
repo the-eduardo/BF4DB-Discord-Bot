@@ -91,6 +91,63 @@ func TestParseCustomID(t *testing.T) {
 	}
 }
 
+func TestInteractionUserID(t *testing.T) {
+	guild := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		Member: &discordgo.Member{User: &discordgo.User{ID: "111"}},
+	}}
+	if got := interactionUserID(guild); got != "111" {
+		t.Errorf("guild member id = %q, want 111", got)
+	}
+
+	dm := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		User: &discordgo.User{ID: "222"},
+	}}
+	if got := interactionUserID(dm); got != "222" {
+		t.Errorf("dm user id = %q, want 222", got)
+	}
+
+	empty := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{}}
+	if got := interactionUserID(empty); got != "" {
+		t.Errorf("neither member nor user set: id = %q, want empty", got)
+	}
+}
+
+func TestResultOwnedBy(t *testing.T) {
+	cases := []struct {
+		name  string
+		owner string
+		user  string
+		want  bool
+	}{
+		{"empty owner (legacy/unset entry) allows anyone", "", "999", true},
+		{"same owner allowed", "111", "111", true},
+		{"different owner denied", "111", "222", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resultOwnedBy(resultSet{owner: c.owner}, c.user); got != c.want {
+				t.Errorf("resultOwnedBy(owner=%q, user=%q) = %v, want %v", c.owner, c.user, got, c.want)
+			}
+		})
+	}
+}
+
+func TestPaginatedStoresOwner(t *testing.T) {
+	b := newTestBot()
+	_, comps := b.paginated("Busca: x", players(12), time.Now(), "111")
+
+	row := comps[0].(discordgo.ActionsRow)
+	next := row.Components[2].(discordgo.Button)
+	key, _, ok := parseCustomID(next.CustomID)
+	if !ok {
+		t.Fatal("could not recover the result key from the button's custom id")
+	}
+	set, found := b.results.Get(key)
+	if !found || set.owner != "111" {
+		t.Errorf("stored owner = %q, found = %v, want 111/true", set.owner, found)
+	}
+}
+
 func TestResultKeysAreUnique(t *testing.T) {
 	seen := map[string]bool{}
 	for range 100 {
@@ -105,7 +162,7 @@ func TestResultKeysAreUnique(t *testing.T) {
 func TestPaginatedStoresOnlyWhenNeeded(t *testing.T) {
 	b := newTestBot()
 
-	embed, comps := b.paginated("Busca: x", players(3), time.Now())
+	embed, comps := b.paginated("Busca: x", players(3), time.Now(), "111")
 	if comps != nil || embed.Footer != nil {
 		t.Error("a single page needs neither buttons nor a footer")
 	}
@@ -113,7 +170,7 @@ func TestPaginatedStoresOnlyWhenNeeded(t *testing.T) {
 		t.Error("nothing should be stored for a single page")
 	}
 
-	embed, comps = b.paginated("Busca: x", players(12), time.Now())
+	embed, comps = b.paginated("Busca: x", players(12), time.Now(), "111")
 	if len(comps) == 0 {
 		t.Fatal("multi-page result carries no buttons")
 	}
