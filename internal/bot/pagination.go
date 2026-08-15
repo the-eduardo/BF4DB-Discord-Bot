@@ -26,6 +26,25 @@ type resultSet struct {
 	title   string
 	players []bf4db.Player
 	created time.Time
+	owner   string // discord user id that ran the search; "" = unowned
+}
+
+// interactionUserID returns who triggered an interaction, whether it came
+// from a guild (Member) or a DM (User).
+func interactionUserID(i *discordgo.InteractionCreate) string {
+	if i.Member != nil && i.Member.User != nil {
+		return i.Member.User.ID
+	}
+	if i.User != nil {
+		return i.User.ID
+	}
+	return ""
+}
+
+// resultOwnedBy reports whether userID may page through set. An empty owner
+// keeps old/unset entries open to anyone rather than locking everyone out.
+func resultOwnedBy(set resultSet, userID string) bool {
+	return set.owner == "" || set.owner == userID
 }
 
 // newResultKey is a random handle for a result set; ids are never guessable so
@@ -121,6 +140,10 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 	set, found := b.results.Get(key)
 	if !found {
 		b.respondEphemeral(s, i, "Esta busca expirou. Rode `/bf4db` de novo.")
+		return
+	}
+	if !resultOwnedBy(set, interactionUserID(i)) {
+		b.respondEphemeral(s, i, "Essa busca é de outra pessoa. Rode `/bf4db` você mesmo.")
 		return
 	}
 

@@ -123,7 +123,7 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 			embeds = append(embeds, errorEmbed(title, err))
 		default:
 			b.log.Info("search done", "query_kind", queryKind(query), "results", len(players))
-			embed, comps := b.paginated(title, players, now)
+			embed, comps := b.paginated(title, players, now, interactionUserID(i))
 			embeds = append(embeds, embed)
 			components = append(components, comps...)
 		}
@@ -148,13 +148,13 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 // paginated renders the first page and, when there is more, keeps the full
 // result set around for the buttons.
-func (b *Bot) paginated(title string, players []bf4db.Player, now time.Time) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+func (b *Bot) paginated(title string, players []bf4db.Player, now time.Time, ownerID string) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
 	if len(players) <= pageSize {
 		return resultEmbed(title, players, now), nil
 	}
 
 	key := newResultKey()
-	b.results.Set(key, resultSet{title: title, players: players, created: now})
+	b.results.Set(key, resultSet{title: title, players: players, created: now, owner: ownerID})
 
 	page, _ := pageOf(players, 0)
 	embed := resultEmbed(title, page, now)
