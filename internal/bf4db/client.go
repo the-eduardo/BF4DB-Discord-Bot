@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -80,6 +81,7 @@ type Client struct {
 	nameLimit   int
 	webFallback bool
 	notify      func(format string, args ...any)
+	log         *slog.Logger
 
 	mu        sync.Mutex
 	rateLimit RateLimit
@@ -197,6 +199,18 @@ func WithNotifier(fn func(format string, args ...any)) Option {
 	}
 }
 
+// WithLogger sets the structured logger used for conditions that need to be
+// greppable (e.g. the website scraper's selectors matching nothing), as
+// opposed to WithNotifier's human-facing progress messages.
+func WithLogger(log *slog.Logger) Option {
+	return func(c *Client) error {
+		if log != nil {
+			c.log = log
+		}
+		return nil
+	}
+}
+
 // New builds a Client for the given API token.
 func New(token string, opts ...Option) (*Client, error) {
 	token = strings.TrimSpace(token)
@@ -222,6 +236,7 @@ func New(token string, opts ...Option) (*Client, error) {
 		nameLimit:   defaultNameLimit,
 		webFallback: true,
 		notify:      func(string, ...any) {},
+		log:         slog.Default(),
 	}
 	for _, opt := range opts {
 		if err := opt(c); err != nil {

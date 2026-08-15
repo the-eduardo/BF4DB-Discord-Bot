@@ -39,6 +39,7 @@ func main() {
 		bf4db.WithNotifier(func(format string, args ...any) {
 			log.Info(fmt.Sprintf(format, args...), "source", "bf4db")
 		}),
+		bf4db.WithLogger(log),
 	)
 	if err != nil {
 		log.Error("bf4db client", "err", err)

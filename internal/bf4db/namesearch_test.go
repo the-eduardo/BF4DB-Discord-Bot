@@ -1,9 +1,11 @@
 package bf4db
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -223,6 +225,65 @@ func TestSearchNameReportsBothFailures(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "website fallback") {
 		t.Errorf("error should mention both routes: %v", err)
+	}
+}
+
+func TestSearchNameWebLogsWhenScrapeMatchesNothing(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A 200 whose layout no longer matches webRowRe/webNameRe: the exact
+		// failure mode this log line exists to surface.
+		_, _ = fmt.Fprint(w, `<html><body><div class="new-layout">no rows here</div></body></html>`)
+	})
+
+	c := newNameSearchClient(t, api, web, WithLogger(log))
+	players, err := c.SearchName(context.Background(), "eduardo")
+	if err != nil {
+		t.Fatalf("SearchName: %v", err)
+	}
+	if players != nil {
+		t.Errorf("players = %+v, want nil (unchanged behaviour)", players)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "bf4db web search returned zero rows") {
+		t.Fatalf("expected an ERROR log line for the zero-row scrape, got: %q", out)
+	}
+	if !strings.Contains(out, "name=eduardo") {
+		t.Errorf("log line missing name field: %q", out)
+	}
+	if !strings.Contains(out, "body_len=") {
+		t.Errorf("log line missing body_len field: %q", out)
+	}
+}
+
+func TestSearchNameWebDoesNotLogWhenScrapeFindsRows(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/player/")
+		_, _ = fmt.Fprintf(w, `{"data":{"player_id":%s,"name":"p","is_banned":2}}`, id)
+	})
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, searchPageFixture)
+	})
+
+	c := newNameSearchClient(t, api, web, WithLogger(log))
+	if _, err := c.SearchName(context.Background(), "eduardo"); err != nil {
+		t.Fatalf("SearchName: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no log output on a healthy scrape, got: %q", buf.String())
 	}
 }
 
