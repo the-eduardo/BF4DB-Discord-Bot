@@ -53,6 +53,11 @@ func (c *Client) searchNameWeb(ctx context.Context, name string, limit int) ([]P
 
 	hits := parseWebSearch(string(body))
 	if len(hits) == 0 {
+		// No status/format check above this: a 200 with a changed page layout
+		// looks identical to a genuine "no matches" response. This is the only
+		// signal that separates the two, since the caller sees "no results"
+		// either way.
+		c.log.Error("bf4db web search returned zero rows", "name", name, "body_len", len(body))
 		return nil, nil
 	}
 	if len(hits) > limit {
