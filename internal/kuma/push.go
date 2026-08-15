@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,12 +17,21 @@ import (
 // single missed push does not raise an alert.
 const DefaultInterval = 60 * time.Second
 
+// defaultRetryDelay is how long pushIfAlive waits before retrying a single
+// failed push. Kept short: the known failure mode (Kuma's own push endpoint
+// answering 404 right after its DB cleanup, louislam/uptime-kuma#2746) clears
+// within seconds, well inside the 60s interval to the next scheduled push.
+const defaultRetryDelay = 5 * time.Second
+
 // Pusher periodically reports liveness to an Uptime Kuma push monitor.
 type Pusher struct {
-	url      string
-	interval time.Duration
-	client   *http.Client
-	log      *slog.Logger
+	url        string
+	interval   time.Duration
+	retryDelay time.Duration
+	client     *http.Client
+	log        *slog.Logger
+
+	consecutive atomic.Int64 // falhas de push consecutivas, apos a 2a tentativa
 }
 
 // NewPusher returns nil when no URL is configured, which makes the heartbeat
@@ -31,10 +41,11 @@ func NewPusher(pushURL string, log *slog.Logger) *Pusher {
 		return nil
 	}
 	return &Pusher{
-		url:      pushURL,
-		interval: DefaultInterval,
-		client:   &http.Client{Timeout: 10 * time.Second},
-		log:      log,
+		url:        pushURL,
+		interval:   DefaultInterval,
+		retryDelay: defaultRetryDelay,
+		client:     &http.Client{Timeout: 10 * time.Second},
+		log:        log,
 	}
 }
 
@@ -67,8 +78,26 @@ func (p *Pusher) pushIfAlive(ctx context.Context, alive func() (bool, time.Durat
 		return
 	}
 	if err := p.push(ctx, latency); err != nil {
-		p.log.Warn("kuma push failed", "err", err)
+		// Uma falha isolada de push nao deve virar WARN nem beat perdido: o
+		// endpoint de push do Kuma responde 404 logo apos o proprio DB cleanup
+		// dele (louislam/uptime-kuma#2746), que nao e' retryable por natureza,
+		// mas passa na tentativa seguinte segundos depois.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(p.retryDelay):
+		}
+		if err = p.push(ctx, latency); err != nil {
+			n := p.consecutive.Add(1)
+			if n >= 3 {
+				p.log.Error("kuma push failed twice in a row", "err", err, "consecutive", n)
+			} else {
+				p.log.Warn("kuma push failed twice in a row", "err", err, "consecutive", n)
+			}
+			return
+		}
 	}
+	p.consecutive.Store(0)
 }
 
 func (p *Pusher) push(ctx context.Context, latency time.Duration) error {

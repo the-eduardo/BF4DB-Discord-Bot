@@ -95,6 +95,55 @@ func TestRunPushesImmediatelyAndStopsWithContext(t *testing.T) {
 	}
 }
 
+// The known failure mode: the push endpoint answers 404 once (Kuma's own DB
+// cleanup, louislam/uptime-kuma#2746) and recovers on the very next try. A
+// single failed attempt must not become a WARN, and no beat should be lost.
+func TestPushIfAliveRetriesOnceBeforeLoggingFailure(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p := NewPusher(srv.URL, testLogger())
+	p.retryDelay = time.Millisecond
+
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, 0 })
+
+	if calls.Load() != 2 {
+		t.Fatalf("esperava 2 tentativas (falha + retry), veio %d", calls.Load())
+	}
+	if p.consecutive.Load() != 0 {
+		t.Errorf("consecutive deveria zerar apos sucesso no retry, veio %d", p.consecutive.Load())
+	}
+}
+
+// Duas falhas seguidas (404 na 1a e na 2a tentativa) tem que contar como UMA
+// falha consecutiva -- e' isso que separa "blip" de "queda de verdade".
+func TestPushIfAliveCountsConsecutiveFailuresAfterBothAttemptsFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	p := NewPusher(srv.URL, testLogger())
+	p.retryDelay = time.Millisecond
+
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, 0 })
+	if p.consecutive.Load() != 1 {
+		t.Fatalf("esperava 1 falha consecutiva, veio %d", p.consecutive.Load())
+	}
+
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, 0 })
+	if p.consecutive.Load() != 2 {
+		t.Fatalf("esperava 2 falhas consecutivas, veio %d", p.consecutive.Load())
+	}
+}
+
 func TestPushReportsBadStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
