@@ -5,7 +5,7 @@ services:
       args:
         VERSION: ${VERSION:-dev}
     image: ghcr.io/the-eduardo/bf4db-discord-bot:latest
-    container_name: bf4-search-bot
+    container_name: bf4db-bot
     restart: unless-stopped
     env_file:
       - .env
