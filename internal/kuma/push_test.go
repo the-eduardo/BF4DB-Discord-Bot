@@ -155,3 +155,18 @@ func TestPushReportsBadStatus(t *testing.T) {
 		t.Error("want an error for a non-200 push")
 	}
 }
+
+// TestDefaultRetryDelayIs20Seconds prova o valor calibrado em produção
+// (16/08/2026): sem este teste, o construtor podia voltar para o antigo 5s
+// (ou qualquer outro valor) sem que nenhum teste da suíte percebesse — os
+// testes de retry substituem p.retryDelay por time.Millisecond antes de
+// exercitar pushIfAlive, então nunca leem o default de fato usado em
+// produção. Mutação que prova o buraco: trocar defaultRetryDelay de volta
+// para 5*time.Second faz este teste falhar; sem ele, a suíte inteira
+// permanecia verde com a regressão.
+func TestDefaultRetryDelayIs20Seconds(t *testing.T) {
+	p := NewPusher("http://example.invalid/push", testLogger())
+	if p.retryDelay != 20*time.Second {
+		t.Errorf("retryDelay = %v, want 20s", p.retryDelay)
+	}
+}

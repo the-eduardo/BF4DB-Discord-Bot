@@ -18,10 +18,11 @@ import (
 const DefaultInterval = 60 * time.Second
 
 // defaultRetryDelay is how long pushIfAlive waits before retrying a single
-// failed push. Kept short: the known failure mode (Kuma's own push endpoint
-// answering 404 right after its DB cleanup, louislam/uptime-kuma#2746) clears
-// within seconds, well inside the 60s interval to the next scheduled push.
-const defaultRetryDelay = 5 * time.Second
+// failed push. 20s foi calibrado por observacao em producao: o retry a 5s
+// caiu dentro da MESMA janela de 404 nas 3 ocorrencias de 16/08/2026 (14:17,
+// 14:28, 15:01 UTC) — o cleanup do DB do Kuma (louislam/uptime-kuma#2746)
+// pode segurar o 404 por mais que 5s num DB grande.
+const defaultRetryDelay = 20 * time.Second
 
 // Pusher periodically reports liveness to an Uptime Kuma push monitor.
 type Pusher struct {
