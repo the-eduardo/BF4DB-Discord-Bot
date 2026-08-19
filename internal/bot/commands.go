@@ -70,10 +70,7 @@ func (b *Bot) handlePing(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	options := map[string]*discordgo.ApplicationCommandInteractionDataOption{}
-	for _, opt := range i.ApplicationCommandData().Options {
-		options[opt.Name] = opt
-	}
+	options := searchOptions(i.ApplicationCommandData())
 
 	if len(options) == 0 {
 		b.respond(s, i, &discordgo.MessageEmbed{
@@ -144,6 +141,22 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 	}
 
 	b.edit(s, i, embeds, components)
+}
+
+// searchOptions collects the command's options by name, dropping a
+// global-search that is blank once trimmed. A query of only spaces isn't a
+// search: letting it through used to reach the BF4DB lookup, which rejects it
+// with "busca vazia" — logged as an ERROR and shown to the user as a generic
+// API failure, instead of the existing "nada para buscar" guidance.
+func searchOptions(data discordgo.ApplicationCommandInteractionData) map[string]*discordgo.ApplicationCommandInteractionDataOption {
+	options := map[string]*discordgo.ApplicationCommandInteractionDataOption{}
+	for _, opt := range data.Options {
+		if opt.Name == optionSearch && strings.TrimSpace(opt.StringValue()) == "" {
+			continue
+		}
+		options[opt.Name] = opt
+	}
+	return options
 }
 
 // paginated renders the first page and, when there is more, keeps the full
