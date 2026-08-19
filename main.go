@@ -16,10 +16,19 @@ import (
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/config"
 )
 
+// version is overwritten at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	removeCommands := flag.Bool("rmcmd", false, "remove the registered commands on shutdown")
 	guildID := flag.String("guild", "", "guild id for command registration (default: global)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -31,6 +40,7 @@ func main() {
 	}
 
 	log := newLogger(cfg.LogLevel)
+	logStartup(log)
 
 	client, err := bf4db.New(cfg.BF4DBToken,
 		bf4db.WithBaseURL(cfg.BaseURL),
@@ -60,6 +70,10 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("stopped")
+}
+
+func logStartup(log *slog.Logger) {
+	log.Info("starting", "version", version)
 }
 
 func newLogger(level string) *slog.Logger {
