@@ -30,16 +30,11 @@ func main() {
 		return
 	}
 
-	cfg, err := config.Load()
-	if err != nil {
-		slog.Error("configuration", "err", err)
+	log := newLogger(os.Getenv(config.EnvLogLevel))
+	cfg, ok := loadConfig(log, *guildID)
+	if !ok {
 		os.Exit(1)
 	}
-	if *guildID != "" {
-		cfg.GuildID = *guildID
-	}
-
-	log := newLogger(cfg.LogLevel)
 	logStartup(log)
 
 	client, err := bf4db.New(cfg.BF4DBToken,
@@ -74,6 +69,21 @@ func main() {
 
 func logStartup(log *slog.Logger) {
 	log.Info("starting", "version", version)
+}
+
+// loadConfig reads and validates the environment, logging failures through
+// log so a fatal startup error stays in the same JSON stream as every other
+// log line instead of falling back to slog's default text handler.
+func loadConfig(log *slog.Logger, guildOverride string) (config.Config, bool) {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Error("configuration", "err", err)
+		return config.Config{}, false
+	}
+	if guildOverride != "" {
+		cfg.GuildID = guildOverride
+	}
+	return cfg, true
 }
 
 func newLogger(level string) *slog.Logger {
