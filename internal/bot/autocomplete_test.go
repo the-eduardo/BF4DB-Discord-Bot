@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,6 +27,21 @@ func newTestBot() *Bot {
 		suggestions: cache.New[[]*discordgo.ApplicationCommandOptionChoice](time.Minute, 50),
 		results:     cache.New[resultSet](time.Minute, 50),
 	}
+}
+
+// newTestBotWithLogs is like newTestBot but captures JSON log records at
+// production's LOG_LEVEL=info, so tests can assert on what actually reaches
+// prod logs instead of what's merely emitted at Debug and dropped.
+func newTestBotWithLogs() (*Bot, *bytes.Buffer) {
+	var buf bytes.Buffer
+	b := &Bot{
+		log:         slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		timeout:     5 * time.Second,
+		lookups:     cache.New[[]bf4db.Player](time.Minute, 50),
+		suggestions: cache.New[[]*discordgo.ApplicationCommandOptionChoice](time.Minute, 50),
+		results:     cache.New[resultSet](time.Minute, 50),
+	}
+	return b, &buf
 }
 
 const suggestPage = `<table><tbody>
@@ -95,13 +111,20 @@ func TestSuggestSkipsQueriesNotWorthARequest(t *testing.T) {
 }
 
 func TestSuggestSurvivesAnOutage(t *testing.T) {
-	b := newTestBot()
+	b, logs := newTestBotWithLogs()
 	withWebStub(t, b, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	})
 
 	if got := b.suggest("eduardo"); got != nil {
 		t.Errorf("suggest during an outage = %+v, want nil", got)
+	}
+
+	// LOG_LEVEL=info in production drops Debug entirely: a silent bf4db.com
+	// block/outage and "nobody used autocomplete" would look identical unless
+	// this failure is logged at WARN or above.
+	if out := logs.String(); !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, "autocomplete lookup failed") {
+		t.Errorf("expected a WARN log for the autocomplete failure, got: %s", out)
 	}
 }
 
