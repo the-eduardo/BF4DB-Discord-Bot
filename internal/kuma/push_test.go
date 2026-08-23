@@ -1,11 +1,13 @@
 package kuma
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +15,13 @@ import (
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
+// testLoggerWithBuffer captura registros JSON (o mesmo handler de produção)
+// pra o teste poder afirmar o NÍVEL emitido, não só que algo foi logado.
+func testLoggerWithBuffer() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})), &buf
 }
 
 func TestNewPusherIsOptional(t *testing.T) {
@@ -168,5 +177,57 @@ func TestDefaultRetryDelayIs20Seconds(t *testing.T) {
 	p := NewPusher("http://example.invalid/push", testLogger())
 	if p.retryDelay != 20*time.Second {
 		t.Errorf("retryDelay = %v, want 20s", p.retryDelay)
+	}
+}
+
+// A janela desconectada quebra a contiguidade das falhas: sem isto, falhas de
+// push separadas por horas de gateway caído somam no mesmo contador e viram
+// um ERROR falso de "3 falhas consecutivas" quando na verdade foram blips
+// isolados intercalados com desconexões.
+func TestConsecutiveResetsWhenGatewayDisconnects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	p := NewPusher(srv.URL, testLogger())
+	p.retryDelay = time.Millisecond
+
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, 0 })
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, 0 })
+	if p.consecutive.Load() != 2 {
+		t.Fatalf("esperava 2 falhas consecutivas antes da desconexão, veio %d", p.consecutive.Load())
+	}
+
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return false, 0 })
+	if p.consecutive.Load() != 0 {
+		t.Errorf("consecutive deveria zerar ao desconectar, veio %d", p.consecutive.Load())
+	}
+}
+
+// Garante que o fix acima não cega o dead-man de verdade: uma queda contínua
+// do endpoint de push do Kuma, com o gateway conectado o tempo todo (sem
+// nenhuma desconexão zerando o contador no meio), ainda precisa virar ERROR
+// na 3a falha consecutiva.
+func TestErrorStillRaisedOnTrulyConsecutiveFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	log, logs := testLoggerWithBuffer()
+	p := NewPusher(srv.URL, log)
+	p.retryDelay = time.Millisecond
+
+	for i := 0; i < 3; i++ {
+		p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, 0 })
+	}
+	if p.consecutive.Load() != 3 {
+		t.Fatalf("esperava 3 falhas consecutivas, veio %d", p.consecutive.Load())
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, `"level":"ERROR"`) || !strings.Contains(out, `"consecutive":3`) {
+		t.Errorf("esperava um registro ERROR com consecutive=3, veio: %s", out)
 	}
 }

@@ -76,6 +76,10 @@ func (p *Pusher) pushIfAlive(ctx context.Context, alive func() (bool, time.Durat
 	// this monitor is to catch exactly that.
 	ok, latency := alive()
 	if !ok {
+		// Sem push nao ha serie: a janela desconectada quebra a contiguidade, e
+		// manter o contador transformaria blips espalhados por horas de
+		// desconexao num ERROR falso de "3 falhas consecutivas".
+		p.consecutive.Store(0)
 		return
 	}
 	if err := p.push(ctx, latency); err != nil {
