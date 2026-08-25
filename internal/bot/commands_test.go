@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +111,47 @@ func TestHandleSearchBlankQueryShowsNothingToSearch(t *testing.T) {
 	if got := rt.last(t); got.Type != int(discordgo.InteractionResponseChannelMessageWithSource) {
 		t.Fatalf("resposta type=%d, want ChannelMessageWithSource (%d)",
 			got.Type, discordgo.InteractionResponseChannelMessageWithSource)
+	}
+}
+
+// Fiação do fallback de 5xx: garante que é b.lookup (via commands.go:233)
+// quem se beneficia da correção em client.go, não só SearchName isolado.
+// Mutação que prova: reverter client.go para `!= http.StatusInternalServerError`
+// faz este teste falhar com "bf4db: unexpected response 502 Bad Gateway".
+func TestLookupFallsBackToWebsiteOnCloudflare5xx(t *testing.T) {
+	b := newTestBot()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/player/")
+		fmt.Fprintf(w, `{"data":{"player_id":%s,"name":"p","is_banned":2}}`, id)
+	}))
+	defer api.Close()
+	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><body><table><tbody>
+<tr><td class="player-td-image"><a href="/player/172015112"><img></a></td>
+    <td class="player-td-name"><a href="/player/172015112"> eduardo </a></td>
+    <td class="pull-right"></td></tr>
+</tbody></table></body></html>`)
+	}))
+	defer web.Close()
+
+	client, err := bf4db.New(strings.Repeat("a", 64),
+		bf4db.WithBaseURL(api.URL+"/api"), bf4db.WithWebBaseURL(web.URL))
+	if err != nil {
+		t.Fatalf("bf4db.New: %v", err)
+	}
+	b.client = client
+
+	players, err := b.lookup(context.Background(), "eduardo")
+	if err != nil {
+		t.Fatalf("lookup: %v, want the website fallback to cover the 502", err)
+	}
+	if len(players) != 1 || players[0].PersonaID() != 172015112 {
+		t.Errorf("players = %+v", players)
 	}
 }
 

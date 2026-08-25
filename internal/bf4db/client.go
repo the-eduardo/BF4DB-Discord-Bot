@@ -277,7 +277,7 @@ func (c *Client) SearchName(ctx context.Context, name string) ([]Player, error) 
 	}
 	players, err := c.searchPaged(ctx, requestOptions{noRetryServerError: true}, "player", name, "search")
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusInternalServerError {
+	if !errors.As(err, &apiErr) || apiErr.StatusCode < http.StatusInternalServerError {
 		return players, err
 	}
 
