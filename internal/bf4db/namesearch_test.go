@@ -139,6 +139,44 @@ func TestSearchNameFallsBackToWebsiteAndHydrates(t *testing.T) {
 	}
 }
 
+// TestSearchNameFallsBackOnAnyServerError guards against a regression where
+// the fallback only triggered on HTTP 500 exactly. BF4DB sits behind
+// Cloudflare, which answers with 502/503/504 whenever the origin trips —
+// attempt() (client.go) already treats every >=500 as one retryable class,
+// and SearchName's fallback check must match that, or Cloudflare hiccups
+// kill by-name search entirely instead of falling back to the website.
+func TestSearchNameFallsBackOnAnyServerError(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var searchCalls atomic.Int32
+			api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/search") {
+					searchCalls.Add(1)
+					w.WriteHeader(status)
+					return
+				}
+				id := strings.TrimPrefix(r.URL.Path, "/api/player/")
+				_, _ = fmt.Fprintf(w, `{"data":{"player_id":%s,"name":"p","is_banned":2}}`, id)
+			})
+			web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = fmt.Fprint(w, searchPageFixture)
+			})
+
+			c := newNameSearchClient(t, api, web)
+			players, err := c.SearchName(context.Background(), "eduardo")
+			if err != nil {
+				t.Fatalf("SearchName: %v", err)
+			}
+			if len(players) != 3 {
+				t.Fatalf("got %d players, want 3 (fallback should have hydrated the scrape)", len(players))
+			}
+			if searchCalls.Load() != 1 {
+				t.Errorf("API search called %d times, want 1 (no retry storm)", searchCalls.Load())
+			}
+		})
+	}
+}
+
 func TestSearchNameKeepsStubWhenHydrationFails(t *testing.T) {
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/search") {
