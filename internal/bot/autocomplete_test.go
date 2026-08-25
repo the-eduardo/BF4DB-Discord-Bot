@@ -134,3 +134,28 @@ func TestChoiceLabelTruncation(t *testing.T) {
 		t.Errorf("choice label is %d chars, over Discord's %d", len([]rune(got)), maxChoiceName)
 	}
 }
+
+// suggestPageNoName mimics a scraped row where the name anchor is blank
+// (<a href="/player/111"> </a>), which webNameRe still matches.
+const suggestPageNoName = `<table><tbody>
+<tr><td class="player-td-image"><a href="/player/111"><img></a></td>
+    <td class="player-td-name"><a href="/player/111"> </a></td><td class="pull-right"></td></tr>
+</tbody></table>`
+
+func TestSuggestNeverEmitsEmptyChoiceName(t *testing.T) {
+	b := newTestBot()
+	withWebStub(t, b, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, suggestPageNoName)
+	})
+
+	// Exercises the full chain (scraper -> suggest -> choiceLabel), not just
+	// the formatter in isolation: Discord rejects the ENTIRE autocomplete
+	// response with a 400 if any single choice has an empty name.
+	got := b.suggest("eduardo")
+	if len(got) != 1 {
+		t.Fatalf("got %d choices, want 1", len(got))
+	}
+	if got[0].Name == "" {
+		t.Fatal("choice name is empty: Discord would reject the whole response with a 400")
+	}
+}
