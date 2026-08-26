@@ -159,3 +159,52 @@ func TestSuggestNeverEmitsEmptyChoiceName(t *testing.T) {
 		t.Fatal("choice name is empty: Discord would reject the whole response with a 400")
 	}
 }
+
+// failingTransport makes every Discord REST call fail at the transport layer,
+// which is what an InteractionRespond rejection looks like from inside
+// handleAutocomplete.
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("discord rejected the autocomplete response")
+}
+
+func autocompleteInteraction(query string) *discordgo.InteractionCreate {
+	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		Type:  discordgo.InteractionApplicationCommandAutocomplete,
+		ID:    "1",
+		AppID: "2",
+		Token: "tok",
+		Data: discordgo.ApplicationCommandInteractionData{
+			Name: "bf4db",
+			Options: []*discordgo.ApplicationCommandInteractionDataOption{
+				{Name: optionSearch, Type: discordgo.ApplicationCommandOptionString, Value: query, Focused: true},
+			},
+		},
+	}}
+}
+
+// TestHandleAutocompleteLogsRejectionAtWarn is the wiring test for the log
+// level, not for the formatter: a rejected InteractionRespond wipes out the
+// whole choice list for the user, and at LOG_LEVEL=info (production) a Debug
+// line is dropped entirely — "Discord refused every suggestion" and "nobody
+// used autocomplete" would look identical in the logs. Same reasoning already
+// applied to suggest() in 2.3.1; this covers the response path.
+func TestHandleAutocompleteLogsRejectionAtWarn(t *testing.T) {
+	b, logs := newTestBotWithLogs()
+
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	s.Client = &http.Client{Transport: failingTransport{}}
+
+	// "ed" is under minAutocompleteLen, so suggest() returns without touching
+	// the network: this isolates the response/logging path being tested.
+	b.handleAutocomplete(s, autocompleteInteraction("ed"))
+
+	out := logs.String()
+	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, "autocomplete response failed") {
+		t.Errorf("expected a WARN log for the rejected autocomplete response, got: %s", out)
+	}
+}
