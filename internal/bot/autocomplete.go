@@ -44,7 +44,10 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 		Data: &discordgo.InteractionResponseData{Choices: choices},
 	})
 	if err != nil {
-		b.log.Debug("autocomplete response failed", "err", err)
+		// Same reasoning as the Warn below in suggest(): LOG_LEVEL=info in
+		// production drops Debug entirely, and a rejected response here means
+		// the whole choice list vanished for the user, not just one entry.
+		b.log.Warn("autocomplete response failed", "err", err)
 	}
 }
 
@@ -89,11 +92,24 @@ func (b *Bot) suggest(query string) []*discordgo.ApplicationCommandOptionChoice 
 }
 
 func choiceLabel(p bf4db.Player) string {
+	// The Discord API rejects the whole autocomplete response (400) if any
+	// choice has an empty name, so a single unnamed row would wipe out all
+	// up to 25 suggestions. A scraped row with a blank <a> tag (webNameRe in
+	// namesearch.go) produces exactly that: Name == "".
+	//
+	// The TrimSpace is belt-and-braces, not a padding fix: webNameRe already
+	// trims around its capture group and parseWebSearch trims again, so a name
+	// only reaches here padded if that pipeline changes. Nothing about the
+	// rendered label changes for names that merely had surrounding whitespace.
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		name = "(sem nome)"
+	}
 	if p.Banned() {
 		if reason := strings.TrimSpace(p.BanReason); reason != "" {
-			return fmt.Sprintf("%s — banido (%s)", p.Name, reason)
+			return fmt.Sprintf("%s — banido (%s)", name, reason)
 		}
-		return p.Name + " — banido"
+		return name + " — banido"
 	}
-	return p.Name
+	return name
 }

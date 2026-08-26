@@ -2,6 +2,7 @@ package bot
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -133,4 +134,113 @@ func TestChoiceLabelTruncation(t *testing.T) {
 	if got := truncate(choiceLabel(long), maxChoiceName); len([]rune(got)) > maxChoiceName {
 		t.Errorf("choice label is %d chars, over Discord's %d", len([]rune(got)), maxChoiceName)
 	}
+}
+
+// suggestPageNoName mimics a scraped row where the name anchor is blank
+// (<a href="/player/111"> </a>), which webNameRe still matches.
+const suggestPageNoName = `<table><tbody>
+<tr><td class="player-td-image"><a href="/player/111"><img></a></td>
+    <td class="player-td-name"><a href="/player/111"> </a></td><td class="pull-right"></td></tr>
+<tr><td class="player-td-image"><a href="/player/222"><img></a></td>
+    <td class="player-td-name"><a href="/player/222"> </a></td>
+    <td class="pull-right"><a href="https://bf4db.com/player/ban/222" data-original-title="Aimbot">Banned</a></td></tr>
+</tbody></table>`
+
+func TestSuggestNeverEmitsEmptyChoiceName(t *testing.T) {
+	b := newTestBot()
+	withWebStub(t, b, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, suggestPageNoName)
+	})
+
+	// Exercises the full chain (scraper -> suggest -> choiceLabel), not just
+	// the formatter in isolation: Discord rejects the ENTIRE autocomplete
+	// response with a 400 if any single choice has an empty name.
+	got := b.suggest("eduardo")
+	if len(got) != 2 {
+		t.Fatalf("got %d choices, want 2", len(got))
+	}
+	// Pin the label instead of just "not empty": a fix that filtered the unnamed
+	// row out, or replaced it with any other placeholder, would pass a
+	// non-emptiness check while changing what the user actually sees. The banned
+	// row covers the second branch of choiceLabel, where the " — banido" suffix
+	// alone would already keep the name non-empty and hide a missed fix.
+	if got[0].Name != "(sem nome)" {
+		t.Errorf("unbanned label = %q, want %q", got[0].Name, "(sem nome)")
+	}
+	if got[1].Name != "(sem nome) — banido (Aimbot)" {
+		t.Errorf("banned label = %q, want %q", got[1].Name, "(sem nome) — banido (Aimbot)")
+	}
+}
+
+// failingTransport makes every Discord REST call fail at the transport layer,
+// which is what an InteractionRespond rejection looks like from inside
+// handleAutocomplete.
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("discord rejected the autocomplete response")
+}
+
+func autocompleteInteraction(query string) *discordgo.InteractionCreate {
+	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		Type:  discordgo.InteractionApplicationCommandAutocomplete,
+		ID:    "1",
+		AppID: "2",
+		Token: "tok",
+		Data: discordgo.ApplicationCommandInteractionData{
+			Name: "bf4db",
+			Options: []*discordgo.ApplicationCommandInteractionDataOption{
+				{Name: optionSearch, Type: discordgo.ApplicationCommandOptionString, Value: query, Focused: true},
+			},
+		},
+	}}
+}
+
+// TestHandleAutocompleteLogsRejectionAtWarn is the wiring test for the log
+// level, not for the formatter: a rejected InteractionRespond wipes out the
+// whole choice list for the user, and at LOG_LEVEL=info (production) a Debug
+// line is dropped entirely — "Discord refused every suggestion" and "nobody
+// used autocomplete" would look identical in the logs. Same reasoning already
+// applied to suggest() in 2.3.1; this covers the response path.
+func TestHandleAutocompleteLogsRejectionAtWarn(t *testing.T) {
+	b, logs := newTestBotWithLogs()
+
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	s.Client = &http.Client{Transport: failingTransport{}}
+
+	// "ed" is under minAutocompleteLen, so suggest() returns without touching
+	// the network: this isolates the response/logging path being tested.
+	b.handleAutocomplete(s, autocompleteInteraction("ed"))
+
+	// Assert on a SINGLE record, not two independent Contains: with the level
+	// and the message checked separately, any unrelated WARN in the buffer
+	// satisfies the first half while the message itself is emitted at a lower
+	// level, and the test goes green on a demoted log.
+	if !hasLogRecord(logs, "WARN", "autocomplete response failed") {
+		t.Errorf("expected one WARN record with that exact message, got: %s", logs.String())
+	}
+}
+
+// hasLogRecord reports whether the captured JSON log holds a record matching
+// BOTH the level and the message.
+func hasLogRecord(logs *bytes.Buffer, level, msg string) bool {
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec struct {
+			Level string `json:"level"`
+			Msg   string `json:"msg"`
+		}
+		if json.Unmarshal([]byte(line), &rec) != nil {
+			continue
+		}
+		if rec.Level == level && rec.Msg == msg {
+			return true
+		}
+	}
+	return false
 }
