@@ -170,3 +170,56 @@ func TestQueryClassification(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeStripsInvisibleButKeepsTheMentionDefence pins the ORDER of the two
+// transforms, which is the part that is easy to break: stripInvisible runs first,
+// and markupReplacer then inserts a zero-width space into "@" on purpose. Strip
+// after replace and the mention is re-armed.
+//
+// The invisible characters are written as \u escapes on purpose: a literal U+FEFF
+// is an illegal byte order mark in Go source, and the others are unreviewable when
+// pasted inline.
+func TestSanitizeStripsInvisibleButKeepsTheMentionDefence(t *testing.T) {
+	const (
+		rlo  = "\u202e" // right-to-left override: reverses everything after it
+		zwsp = "\u200b" // zero-width space
+		bom  = "\ufeff" // byte order mark
+		lsep = "\u2028" // line separator
+	)
+	for _, tc := range []struct{ name, in, want string }{
+		{"rtl override", "abc" + rlo + "def", "abcdef"},
+		{"zero-width padding", "ed" + zwsp + "ua" + zwsp + "rdo", "eduardo"},
+		{"bom and C0 control", bom + "edu\x07ardo", "eduardo"},
+		{"line separator", "edu" + lsep + "ardo", "eduardo"},
+		{"only invisible collapses to placeholder", zwsp + rlo + bom, "(sem nome)"},
+		{"plain name untouched", "eduardo", "eduardo"},
+		{"accents survive", "Her\u00f3i N\u00e3o", "Her\u00f3i N\u00e3o"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitize(tc.in); got != tc.want {
+				t.Errorf("sanitize(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// The defence the strip must NOT undo: "@" still comes back carrying the
+	// zero-width space that keeps @everyone from resolving.
+	got := sanitize("@everyone")
+	if got == "@everyone" {
+		t.Fatal("the zero-width space was stripped after insertion: @everyone is armed again")
+	}
+	if !strings.Contains(got, zwsp) {
+		t.Errorf("expected the inserted zero-width space to survive, got %q", got)
+	}
+}
+
+func TestChoiceLabelStripsInvisible(t *testing.T) {
+	if got := choiceLabel(bf4db.Player{Name: "ed\u202euardo"}); got != "eduardo" {
+		t.Errorf("choiceLabel = %q, want %q", got, "eduardo")
+	}
+	// A name made only of invisible characters must fall back, not produce the
+	// empty choice name that Discord rejects with a 400.
+	if got := choiceLabel(bf4db.Player{Name: "\u200b\ufeff"}); got != "(sem nome)" {
+		t.Errorf("choiceLabel(invisible-only) = %q, want %q", got, "(sem nome)")
+	}
+}

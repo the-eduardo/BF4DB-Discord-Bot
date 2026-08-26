@@ -103,7 +103,11 @@ func choiceLabel(p bf4db.Player) string {
 	// trims around its capture group and parseWebSearch trims again, so a name
 	// only reaches here padded if that pipeline changes. Nothing about the
 	// rendered label changes for names that merely had surrounding whitespace.
-	name := strings.TrimSpace(p.Name)
+	// stripInvisible for the same reason as in sanitize(): the name is scraped,
+	// so a bidi override or zero-width padding would render a misleading label.
+	// choiceLabel does NOT call sanitize() — Discord renders no markdown in a choice
+	// name — but the invisible-character problem is orthogonal to markdown.
+	name := strings.TrimSpace(stripInvisible(p.Name))
 	if name == "" {
 		name = "(sem nome)"
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -136,8 +137,35 @@ var markupReplacer = strings.NewReplacer(
 	"@", "@​", // zero-width space defuses @everyone / @here
 )
 
+// stripInvisible drops Unicode characters that render as nothing but change how
+// the rest of the text is displayed. Names here come from scraping bf4db.com, so
+// they are attacker-controlled: a right-to-left override (U+202E) reverses the
+// text after it, letting a name read as something else entirely in the client,
+// and zero-width characters pad a name past a length check while looking short.
+//
+// This runs BEFORE markupReplacer, never after: the replacer deliberately INSERTS
+// a zero-width space into "@" to defuse @everyone, and stripping afterwards would
+// undo that defence and re-arm the mention.
+//
+// Cf also covers ZWJ (U+200D), so an emoji sequence in a name degrades into its
+// separate emoji. That is a cosmetic loss on a field that BF4 names barely use,
+// traded for closing a spoofing vector — worth it here, and the reason this is
+// applied to display labels rather than to stored data.
+func stripInvisible(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case unicode.Is(unicode.Cf, r), // bidi overrides, zero-width, BOM
+			unicode.Is(unicode.Cc, r), // C0/C1 controls
+			unicode.Is(unicode.Zl, r), // line separator
+			unicode.Is(unicode.Zp, r): // paragraph separator
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func sanitize(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(stripInvisible(s))
 	if s == "" {
 		return "(sem nome)"
 	}
