@@ -9,6 +9,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
+
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/bf4db"
 )
 
@@ -47,7 +49,7 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 		// Same reasoning as the Warn below in suggest(): LOG_LEVEL=info in
 		// production drops Debug entirely, and a rejected response here means
 		// the whole choice list vanished for the user, not just one entry.
-		b.log.Warn("autocomplete response failed", "err", err)
+		b.log.Warn("autocomplete response failed", "err", redact.Err(err))
 	}
 }
 
@@ -71,7 +73,7 @@ func (b *Bot) suggest(query string) []*discordgo.ApplicationCommandOptionChoice 
 		// Autocomplete is best effort: an empty list just shows no hints, but
 		// this is the highest-volume path to bf4db.com and LOG_LEVEL=info in
 		// production hides Debug entirely — a block/outage would be silent.
-		b.log.Warn("autocomplete lookup failed", "err", err)
+		b.log.Warn("autocomplete lookup failed", "err", redact.Err(err))
 		return nil
 	}
 

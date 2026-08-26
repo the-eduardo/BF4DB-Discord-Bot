@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"sync/atomic"
 	"time"
+
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
 )
 
 // DefaultInterval is half the heartbeat window configured on the monitor, so a
@@ -95,9 +97,9 @@ func (p *Pusher) pushIfAlive(ctx context.Context, alive func() (bool, time.Durat
 		if err = p.push(ctx, latency); err != nil {
 			n := p.consecutive.Add(1)
 			if n >= 3 {
-				p.log.Error("kuma push failed twice in a row", "err", err, "consecutive", n)
+				p.log.Error("kuma push failed twice in a row", "err", redact.Err(err), "consecutive", n)
 			} else {
-				p.log.Warn("kuma push failed twice in a row", "err", err, "consecutive", n)
+				p.log.Warn("kuma push failed twice in a row", "err", redact.Err(err), "consecutive", n)
 			}
 			return
 		}

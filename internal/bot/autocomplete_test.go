@@ -244,3 +244,32 @@ func hasLogRecord(logs *bytes.Buffer, level, msg string) bool {
 	}
 	return false
 }
+
+// TestHandleAutocompleteDoesNotLogTheInteractionToken is the wiring counterpart
+// for the Discord side: InteractionRespond posts to
+// /interactions/{id}/{token}/callback, and a transport-level failure produces a
+// *url.Error whose Error() embeds that whole URL. Promoting this log to Warn
+// (2.3.2) made it visible in production, so the token would reach Loki.
+func TestHandleAutocompleteDoesNotLogTheInteractionToken(t *testing.T) {
+	const token = "INTERACTIONTOKENSECRET"
+
+	b, logs := newTestBotWithLogs()
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	s.Client = &http.Client{Transport: failingTransport{}}
+
+	i := autocompleteInteraction("ed")
+	i.Token = token
+	b.handleAutocomplete(s, i)
+
+	out := logs.String()
+	if strings.Contains(out, token) {
+		t.Errorf("the interaction token reached the log: %s", out)
+	}
+	// Positive control: proves the failure path actually ran.
+	if !hasLogRecord(logs, "WARN", "autocomplete response failed") {
+		t.Fatalf("the rejection was not logged, so the assertion above proves nothing: %s", out)
+	}
+}

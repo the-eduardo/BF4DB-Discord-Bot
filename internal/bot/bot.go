@@ -14,6 +14,7 @@ import (
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/cache"
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/config"
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/kuma"
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
 )
 
 // Cache budgets. Lookups are cached long enough to absorb a channel checking
@@ -113,7 +114,7 @@ func (b *Bot) Run(ctx context.Context, removeCommands bool) error {
 	defer func() {
 		b.connected.Store(false)
 		if err := b.session.Close(); err != nil {
-			b.log.Error("closing session", "err", err)
+			b.log.Error("closing session", "err", redact.Err(err))
 		}
 	}()
 
@@ -160,7 +161,7 @@ func (b *Bot) registerCommands() ([]*discordgo.ApplicationCommand, error) {
 func (b *Bot) removeCommands(registered []*discordgo.ApplicationCommand) {
 	for _, cmd := range registered {
 		if err := b.session.ApplicationCommandDelete(b.session.State.User.ID, b.guildID, cmd.ID); err != nil {
-			b.log.Error("deleting command", "command", cmd.Name, "err", err)
+			b.log.Error("deleting command", "command", cmd.Name, "err", redact.Err(err))
 		}
 	}
 	b.log.Info("commands removed", "count", len(registered))
@@ -176,7 +177,7 @@ func (b *Bot) respond(s *discordgo.Session, i *discordgo.InteractionCreate, embe
 		},
 	})
 	if err != nil {
-		b.log.Error("responding", "err", err)
+		b.log.Error("responding", "err", redact.Err(err))
 	}
 }
 
@@ -191,7 +192,7 @@ func (b *Bot) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCre
 		},
 	})
 	if err != nil {
-		b.log.Error("responding ephemerally", "err", err)
+		b.log.Error("responding ephemerally", "err", redact.Err(err))
 	}
 }
 
@@ -211,7 +212,7 @@ func (b *Bot) edit(s *discordgo.Session, i *discordgo.InteractionCreate, embeds 
 		Components:      &components,
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	}); err != nil {
-		b.log.Error("editing response", "err", err)
+		b.log.Error("editing response", "err", redact.Err(err))
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
+
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/bf4db"
 )
 
@@ -58,14 +60,14 @@ func (b *Bot) handlePing(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Content: "Testing ping..."},
 	}); err != nil {
-		b.log.Error("ping: initial response failed", "err", err)
+		b.log.Error("ping: initial response failed", "err", redact.Err(err))
 		return
 	}
 
 	content := fmt.Sprintf("🏓 Pong!\nAPI: %dms\nBot: %dms",
 		s.HeartbeatLatency().Milliseconds(), time.Since(start).Milliseconds())
 	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content}); err != nil {
-		b.log.Error("ping: edit failed", "err", err)
+		b.log.Error("ping: edit failed", "err", redact.Err(err))
 	}
 }
 
@@ -93,7 +95,7 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	}); err != nil {
-		b.log.Error("search: deferring failed", "err", err)
+		b.log.Error("search: deferring failed", "err", redact.Err(err))
 		return
 	}
 
@@ -116,7 +118,7 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 		players, err := b.cachedLookup(ctx, query)
 		switch {
 		case err != nil:
-			b.log.Error("search failed", "query_kind", queryKind(query), "err", err)
+			b.log.Error("search failed", "query_kind", queryKind(query), "err", redact.Err(err))
 			embeds = append(embeds, errorEmbed(title, err))
 		default:
 			b.log.Info("search done", "query_kind", queryKind(query), "results", len(players))
@@ -132,7 +134,7 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 		players, err := b.client.SearchDiscord(ctx, user.ID)
 		if err != nil {
-			b.log.Error("discord search failed", "user_id", user.ID, "err", err)
+			b.log.Error("discord search failed", "user_id", user.ID, "err", redact.Err(err))
 			embeds = append(embeds, errorEmbed(title, err))
 		} else {
 			b.log.Info("discord search done", "user_id", user.ID, "results", len(players))

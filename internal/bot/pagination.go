@@ -10,6 +10,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
+
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/bf4db"
 )
 
@@ -162,6 +164,6 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		},
 	})
 	if err != nil {
-		b.log.Error("pagination update failed", "err", err)
+		b.log.Error("pagination update failed", "err", redact.Err(err))
 	}
 }
