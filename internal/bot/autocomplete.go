@@ -96,6 +96,11 @@ func choiceLabel(p bf4db.Player) string {
 	// choice has an empty name, so a single unnamed row would wipe out all
 	// up to 25 suggestions. A scraped row with a blank <a> tag (webNameRe in
 	// namesearch.go) produces exactly that: Name == "".
+	//
+	// The TrimSpace is belt-and-braces, not a padding fix: webNameRe already
+	// trims around its capture group and parseWebSearch trims again, so a name
+	// only reaches here padded if that pipeline changes. Nothing about the
+	// rendered label changes for names that merely had surrounding whitespace.
 	name := strings.TrimSpace(p.Name)
 	if name == "" {
 		name = "(sem nome)"
