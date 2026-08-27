@@ -21,6 +21,13 @@ const webSearchLimit = 40
 // defaultNameLimit caps how many hits get hydrated through the API.
 const defaultNameLimit = 25
 
+// suggestZeroRowStreak is how many consecutive zero-row SuggestNames replies
+// it takes to log a warning. Zero rows from a single suggestion is normal (a
+// prefix with no real match), but a long run of them is the same layout-change
+// signal searchNameWeb already logs on the by-name path — the one this
+// autocomplete path lacks despite carrying far more traffic to bf4db.com.
+const suggestZeroRowStreak = 20
+
 // hydrateWorkers is the parallelism used to turn ids into full records. Kept
 // low so a name search cannot burn the 70 requests/minute quota.
 const hydrateWorkers = 4
@@ -91,6 +98,18 @@ func (c *Client) SuggestNames(ctx context.Context, name string, limit int) ([]Pl
 	}
 
 	hits := parseWebSearch(string(body))
+	if len(hits) == 0 {
+		// Zero rows on one suggestion is normal: a prefix with no real match
+		// returns exactly that. Zero rows many times in a row is not — this is
+		// the only layout-change detector on the highest-volume path to the
+		// site; searchNameWeb's own detector only covers full name search,
+		// which can go idle for days.
+		if n := c.suggestMisses.Add(1); n == suggestZeroRowStreak {
+			c.log.Warn("bf4db suggest returned zero rows repeatedly", "consecutive", n, "body_len", len(body))
+		}
+	} else {
+		c.suggestMisses.Store(0)
+	}
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
