@@ -94,6 +94,12 @@ func (p *Pusher) pushIfAlive(ctx context.Context, alive func() (bool, time.Durat
 			return
 		case <-time.After(p.retryDelay):
 		}
+		// O gateway pode ter caido durante a espera do retry: reenviar "up"
+		// sem recheca-lo mentiria pro Kuma que o bot segue conectado.
+		if ok, latency = alive(); !ok {
+			p.consecutive.Store(0)
+			return
+		}
 		if err = p.push(ctx, latency); err != nil {
 			n := p.consecutive.Add(1)
 			if n >= 3 {
