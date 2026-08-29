@@ -18,6 +18,8 @@ import "regexp"
 var patterns = []*regexp.Regexp{
 	// Discord interaction callback: /interactions/{id}/{token}/callback
 	regexp.MustCompile(`(/interactions/\d+/)[^/\s"]+`),
+	// Discord interaction followup/edit: /webhooks/{app_id}/{token}/messages/@original
+	regexp.MustCompile(`(/webhooks/\d+/)[^/?\s"]+`),
 	// Uptime Kuma dead-man switch: /api/push/{token}
 	regexp.MustCompile(`(/api/push/)[^/?\s"]+`),
 }

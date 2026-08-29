@@ -24,6 +24,12 @@ func TestStringMasksUrlBorneSecrets(t *testing.T) {
 			secret: "INTERACTIONTOK",
 			keep:   "/interactions/123/",
 		},
+		{
+			name:   "discord interaction edit/followup token",
+			in:     `Patch "https://discord.com/api/v9/webhooks/1027015041326788659/INTERACTIONTOK/messages/@original": EOF`,
+			secret: "INTERACTIONTOK",
+			keep:   "/webhooks/1027015041326788659/",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := String(tc.in)
@@ -39,6 +45,16 @@ func TestStringMasksUrlBorneSecrets(t *testing.T) {
 				t.Errorf("no REDACTED marker: %s", got)
 			}
 		})
+	}
+}
+
+func TestStringKeepsPathAfterInteractionEditToken(t *testing.T) {
+	in := `Patch "https://discord.com/api/v9/webhooks/1027015041326788659/INTERACTIONTOK/messages/@original": EOF`
+	got := String(in)
+	// The suffix after the token tells a reader which action failed (edit vs
+	// followup); losing it would make the masked line as useless as the raw one.
+	if !strings.Contains(got, "/messages/@original") {
+		t.Errorf("redaction ate the path segment after the token: %s", got)
 	}
 }
 
