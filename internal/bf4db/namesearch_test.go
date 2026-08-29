@@ -325,6 +325,90 @@ func TestSearchNameWebDoesNotLogWhenScrapeFindsRows(t *testing.T) {
 	}
 }
 
+// suggestClient wires only the website stub, since SuggestNames never touches
+// the API route.
+func suggestClient(t *testing.T, web http.Handler, opts ...Option) *Client {
+	t.Helper()
+	webSrv := httptest.NewServer(web)
+	t.Cleanup(webSrv.Close)
+
+	opts = append([]Option{WithWebBaseURL(webSrv.URL)}, opts...)
+	c, err := New(token, opts...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return c
+}
+
+func TestSuggestNamesWarnsAfterConsecutiveZeroRows(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	// A 200 whose layout no longer matches webRowRe/webNameRe: the same
+	// "changed layout" condition searchNameWeb detects on the by-name path,
+	// simulated here since a real layout break cannot be provoked in a test.
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `<html><body><div class="new-layout">no rows here</div></body></html>`)
+	})
+	c := suggestClient(t, web, WithLogger(log))
+
+	for i := 1; i < suggestZeroRowStreak; i++ {
+		if _, err := c.SuggestNames(context.Background(), "eduardo", 0); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("logged after only %d consecutive zero-row replies, want silence before %d: %s", i, suggestZeroRowStreak, buf.String())
+		}
+	}
+
+	if _, err := c.SuggestNames(context.Background(), "eduardo", 0); err != nil {
+		t.Fatalf("call %d: %v", suggestZeroRowStreak, err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "bf4db suggest returned zero rows repeatedly") {
+		t.Fatalf("expected a WARN log at the %dth consecutive zero-row reply, got: %q", suggestZeroRowStreak, out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("consecutive=%d", suggestZeroRowStreak)) {
+		t.Errorf("log line missing consecutive field: %q", out)
+	}
+}
+
+func TestSuggestNamesZeroRowStreakResets(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	// Serves zero-row replies for everything except call number
+	// suggestZeroRowStreak (a single hit right in the middle of two
+	// near-streaks). Note this is NOT enough calls to trigger the warning on
+	// its own: (streak-1) zero-rows, then a hit, then (streak-1) more
+	// zero-rows never reaches 20-in-a-row UNLESS the hit failed to reset the
+	// counter, in which case the second half's first miss lands exactly on
+	// the old count and fires early. A version of this test that only ran
+	// (streak-1) misses after the hit (without the (streak-1) misses before
+	// it) would pass even with the reset silently removed — it wouldn't have
+	// accumulated anything for the reset to matter.
+	var calls atomic.Int32
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == suggestZeroRowStreak {
+			_, _ = fmt.Fprint(w, searchPageFixture)
+			return
+		}
+		_, _ = fmt.Fprint(w, `<html><body><div class="new-layout">no rows here</div></body></html>`)
+	})
+	c := suggestClient(t, web, WithLogger(log))
+
+	total := 2*suggestZeroRowStreak - 1
+	for i := 1; i <= total; i++ {
+		if _, err := c.SuggestNames(context.Background(), "eduardo", 0); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no log (the hit at call %d should have reset the streak), got: %q", suggestZeroRowStreak, buf.String())
+	}
+}
+
 func TestSearchNameUsesAPIWhenItWorks(t *testing.T) {
 	var webCalls atomic.Int32
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

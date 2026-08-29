@@ -129,6 +129,40 @@ func TestSuggestSurvivesAnOutage(t *testing.T) {
 	}
 }
 
+// TestSuggestWarnsAfterConsecutiveZeroRowsThroughTheRealCallSite is the wiring
+// counterpart of TestSuggestNamesWarnsAfterConsecutiveZeroRows (bf4db package):
+// that test proves SuggestNames itself counts and warns; this one proves
+// b.suggest actually calls it on the hot path, not just some other helper. It
+// uses a DIFFERENT query per call on purpose — suggest() caches by query
+// (line ~63), so repeating one query would short-circuit after the first
+// request and the streak (bf4db.suggestZeroRowStreak, currently 20) would
+// never be reached.
+func TestSuggestWarnsAfterConsecutiveZeroRowsThroughTheRealCallSite(t *testing.T) {
+	b, logs := newTestBotWithLogs()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><body><div class="new-layout">no rows here</div></body></html>`)
+	}))
+	t.Cleanup(srv.Close)
+
+	// The WARN is emitted by the bf4db client's own logger, not b.log — wire it
+	// to the same captured buffer, or the assertion below would pass by
+	// accident on a WARN that never reached where production actually looks.
+	client, err := bf4db.New(strings.Repeat("a", 64), bf4db.WithWebBaseURL(srv.URL), bf4db.WithLogger(b.log))
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	b.client = client
+
+	for i := 0; i < 20; i++ {
+		b.suggest(fmt.Sprintf("query-%02d", i))
+	}
+
+	if !hasLogRecord(logs, "WARN", "bf4db suggest returned zero rows repeatedly") {
+		t.Errorf("expected the layout-change WARN to surface through b.suggest, got: %s", logs.String())
+	}
+}
+
 func TestChoiceLabelTruncation(t *testing.T) {
 	long := bf4db.Player{Name: strings.Repeat("x", 200), IsBanned: bf4db.BanActive, BanReason: "Aimbot"}
 	if got := truncate(choiceLabel(long), maxChoiceName); len([]rune(got)) > maxChoiceName {

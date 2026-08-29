@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -85,6 +86,8 @@ type Client struct {
 
 	mu        sync.Mutex
 	rateLimit RateLimit
+
+	suggestMisses atomic.Int64 // zero-rows consecutivos em SuggestNames
 }
 
 // Option customizes a Client.
