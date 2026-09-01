@@ -42,7 +42,7 @@ func resultEmbed(title string, players []bf4db.Player, now time.Time) *discordgo
 		return embed
 	}
 
-	size := len(title)
+	size := utf8.RuneCountInString(title)
 	shown := 0
 	for _, p := range players {
 		if shown >= maxEmbedFields {
@@ -55,10 +55,11 @@ func resultEmbed(title string, players []bf4db.Player, now time.Time) *discordgo
 
 		name := truncate(fmt.Sprintf("%s — %s", sanitize(p.Name), statusLabel(p)), maxFieldName)
 		value := truncate(playerLines(p, id, now), maxFieldValue)
-		if size+len(name)+len(value) > maxEmbedChars {
+		n := utf8.RuneCountInString(name) + utf8.RuneCountInString(value)
+		if size+n > maxEmbedChars {
 			break
 		}
-		size += len(name) + len(value)
+		size += n
 		shown++
 
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{

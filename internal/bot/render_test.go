@@ -113,6 +113,37 @@ func TestResultEmbedRespectsDiscordLimits(t *testing.T) {
 	}
 }
 
+// TestResultEmbedCountsRunesNotBytes guards the size accounting resultEmbed
+// uses to decide how many fields fit under maxEmbedChars. Discord counts
+// characters (runes), and truncate() already does the same (render.go:178),
+// but the running total in resultEmbed used to add up len(name)+len(value) in
+// BYTES — so multi-byte names (Cyrillic/CJK clan tags, common in BF4) hit the
+// cap early and lost fields the byte-accurate rune count would have kept.
+func TestResultEmbedCountsRunesNotBytes(t *testing.T) {
+	buildPlayers := func(name string) []bf4db.Player {
+		var players []bf4db.Player
+		for i := range 40 {
+			players = append(players, bf4db.Player{
+				ID: bf4db.FlexInt(i + 1), Name: name, BanReason: "flagged", IsBanned: bf4db.BanActive,
+			})
+		}
+		return players
+	}
+
+	ascii := resultEmbed("Busca: ascii", buildPlayers(strings.Repeat("n", 200)), testTime)
+	// "★" (U+2605) is 3 bytes in UTF-8 but 1 rune, same as "n" — the two name
+	// sets have the identical rune count and must fill the embed identically.
+	multiByte := resultEmbed("Busca: multibyte", buildPlayers(strings.Repeat("★", 200)), testTime)
+
+	if len(ascii.Fields) == 0 {
+		t.Fatalf("test setup produced 0 fields for the ASCII case, adjust the player count")
+	}
+	if len(ascii.Fields) != len(multiByte.Fields) {
+		t.Errorf("ASCII names got %d fields, multi-byte names of the same rune length got %d — sizing is counting bytes, not runes",
+			len(ascii.Fields), len(multiByte.Fields))
+	}
+}
+
 func TestResultEmbedSkipsRecordsWithoutID(t *testing.T) {
 	embed := resultEmbed("t", []bf4db.Player{{Name: "Ghost"}}, testTime)
 	if len(embed.Fields) != 0 {
