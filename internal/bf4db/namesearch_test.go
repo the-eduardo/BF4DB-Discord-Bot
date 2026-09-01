@@ -409,6 +409,38 @@ func TestSuggestNamesZeroRowStreakResets(t *testing.T) {
 	}
 }
 
+// A permanent layout break never lands on n == suggestZeroRowStreak again
+// once it passes it, so warning only at that exact count logs exactly once
+// and then goes silent for as long as the container runs — indistinguishable
+// from a healthy scraper. This proves the warning keeps firing on every
+// further multiple of the streak instead.
+func TestSuggestNamesKeepsWarningWhileTheStreakContinues(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `<html><body><div class="new-layout">no rows here</div></body></html>`)
+	})
+	c := suggestClient(t, web, WithLogger(log))
+
+	for i := 1; i <= 2*suggestZeroRowStreak; i++ {
+		if _, err := c.SuggestNames(context.Background(), "eduardo", 0); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+
+	out := buf.String()
+	if got := strings.Count(out, "bf4db suggest returned zero rows repeatedly"); got != 2 {
+		t.Fatalf("esperava 2 avisos (em n=%d e n=%d) numa quebra permanente, veio %d: %q", suggestZeroRowStreak, 2*suggestZeroRowStreak, got, out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("consecutive=%d", 2*suggestZeroRowStreak)) {
+		t.Errorf("log line missing consecutive=%d: %q", 2*suggestZeroRowStreak, out)
+	}
+	if c.suggestMisses.Load() != int64(2*suggestZeroRowStreak) {
+		t.Errorf("suggestMisses = %d, want %d", c.suggestMisses.Load(), 2*suggestZeroRowStreak)
+	}
+}
+
 func TestSearchNameUsesAPIWhenItWorks(t *testing.T) {
 	var webCalls atomic.Int32
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

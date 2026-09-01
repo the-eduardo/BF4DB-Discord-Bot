@@ -22,10 +22,14 @@ const webSearchLimit = 40
 const defaultNameLimit = 25
 
 // suggestZeroRowStreak is how many consecutive zero-row SuggestNames replies
-// it takes to log a warning. Zero rows from a single suggestion is normal (a
-// prefix with no real match), but a long run of them is the same layout-change
-// signal searchNameWeb already logs on the by-name path — the one this
-// autocomplete path lacks despite carrying far more traffic to bf4db.com.
+// it takes to log a warning, and thereafter the log fires again on every
+// further multiple of the streak. Zero rows from a single suggestion is
+// normal (a prefix with no real match), but a long run of them is the same
+// layout-change signal searchNameWeb already logs on the by-name path — the
+// one this autocomplete path lacks despite carrying far more traffic to
+// bf4db.com. A permanent layout break never lands on the streak count again
+// once it passes it, so warning only at n == streak would log exactly once
+// and then go silent for as long as the container runs.
 const suggestZeroRowStreak = 20
 
 // hydrateWorkers is the parallelism used to turn ids into full records. Kept
@@ -104,7 +108,7 @@ func (c *Client) SuggestNames(ctx context.Context, name string, limit int) ([]Pl
 		// the only layout-change detector on the highest-volume path to the
 		// site; searchNameWeb's own detector only covers full name search,
 		// which can go idle for days.
-		if n := c.suggestMisses.Add(1); n == suggestZeroRowStreak {
+		if n := c.suggestMisses.Add(1); n >= suggestZeroRowStreak && n%suggestZeroRowStreak == 0 {
 			c.log.Warn("bf4db suggest returned zero rows repeatedly", "consecutive", n, "body_len", len(body))
 		}
 	} else {
