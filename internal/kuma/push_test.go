@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -266,4 +267,132 @@ func TestNoRetryPushWhenGatewayDropsDuringRetryDelay(t *testing.T) {
 	if p.consecutive.Load() != 0 {
 		t.Errorf("consecutive deveria zerar quando o gateway cai durante o retryDelay, veio %d", p.consecutive.Load())
 	}
+}
+
+// syncBuffer e' um bytes.Buffer seguro pra leitura concorrente: o slog escreve
+// de dentro da goroutine do Pusher.Run e o teste le de fora, e bytes.Buffer
+// puro nao e' seguro pra isso (data race sob -race).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// Uma queda prolongada (3 ticks seguidos sem gateway) tem que deixar rastro no
+// log do proprio bot -- hoje o post-mortem de uma queda depende inteiramente
+// do Kuma, que e' justamente o componente com 404 episodico em aberto. E o
+// dead-man continua cego ao Kuma: nenhum push deve sair enquanto desconectado.
+func TestProlongedDisconnectIsLogged(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+	}))
+	defer srv.Close()
+
+	log, logs := testLoggerWithBuffer()
+	p := NewPusher(srv.URL, log)
+
+	alive := func() (bool, time.Duration) { return false, 0 }
+	for i := 0; i < 3; i++ {
+		p.pushIfAlive(context.Background(), alive)
+	}
+
+	if calls.Load() != 0 {
+		t.Errorf("pushou %d vezes com o gateway desconectado, dead-man cego", calls.Load())
+	}
+	out := logs.String()
+	if n := strings.Count(out, `"msg":"gateway offline"`); n != 1 {
+		t.Fatalf("esperava exatamente 1 registro de gateway offline apos 3 ticks, veio %d: %s", n, out)
+	}
+	if !strings.Contains(out, `"ticks":3`) {
+		t.Errorf("esperava ticks=3 no registro, veio: %s", out)
+	}
+}
+
+// O requisito que protege as ~20 desconexoes/dia observadas em producao de
+// virarem ruido: um blip de 1-2 ticks (resume em segundos) nao pode gerar
+// nenhuma linha nova de log, nem na queda nem na volta.
+func TestShortDisconnectStaysSilent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	log, logs := testLoggerWithBuffer()
+	p := NewPusher(srv.URL, log)
+
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return false, 0 })
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return false, 0 })
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, time.Millisecond })
+
+	if out := logs.String(); out != "" {
+		t.Errorf("blip curto de 2 ticks nao deveria logar nada, veio: %s", out)
+	}
+}
+
+// Espelho do teste anterior do lado da volta: apos uma queda que JA cruzou o
+// limiar de aviso, a reconexao precisa gerar 1 linha "gateway back" -- sem
+// isto, so o inicio da queda fica registrado e o post-mortem nao sabe quando
+// ela acabou.
+func TestGatewayBackIsLoggedAfterProlongedDisconnect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	log, logs := testLoggerWithBuffer()
+	p := NewPusher(srv.URL, log)
+
+	for i := 0; i < 3; i++ {
+		p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return false, 0 })
+	}
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, time.Millisecond })
+
+	out := logs.String()
+	if n := strings.Count(out, `"msg":"gateway back"`); n != 1 {
+		t.Fatalf("esperava exatamente 1 registro de gateway back, veio %d: %s", n, out)
+	}
+	if !strings.Contains(out, `"offline_ticks":3`) {
+		t.Errorf("esperava offline_ticks=3 no registro, veio: %s", out)
+	}
+}
+
+// Fecha o buraco documentado na proposta: provar que o WARN sai pelo ticker
+// REAL de Run, nao so por chamada direta de pushIfAlive -- e' assim que o
+// dead-man e' de fato exercitado em producao.
+func TestOfflineLoggedThroughRealTicker(t *testing.T) {
+	sb := &syncBuffer{}
+	log := slog.New(slog.NewJSONHandler(sb, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	p := NewPusher("http://example.invalid/push", log)
+	p.interval = 5 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.Run(ctx, func() (bool, time.Duration) { return false, 0 })
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(sb.String(), `"msg":"gateway offline"`) {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("gateway offline nunca foi logado atraves do ticker real")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
 }

@@ -26,6 +26,11 @@ const DefaultInterval = 60 * time.Second
 // pode segurar o 404 por mais que 5s num DB grande.
 const defaultRetryDelay = 20 * time.Second
 
+// offlineWarnAfter e' o numero de ticks desconectado (3 = 3min no intervalo
+// default) antes do primeiro WARN de queda prolongada. Abaixo disso o blip
+// fica silencioso de proposito: sao dezenas por dia e nenhum e' incidente.
+const offlineWarnAfter = 3
+
 // Pusher periodically reports liveness to an Uptime Kuma push monitor.
 type Pusher struct {
 	url        string
@@ -35,6 +40,7 @@ type Pusher struct {
 	log        *slog.Logger
 
 	consecutive atomic.Int64 // falhas de push consecutivas, apos a 2a tentativa
+	offline     atomic.Int64 // ticks consecutivos com o gateway desconectado
 }
 
 // NewPusher returns nil when no URL is configured, which makes the heartbeat
@@ -82,7 +88,17 @@ func (p *Pusher) pushIfAlive(ctx context.Context, alive func() (bool, time.Durat
 		// manter o contador transformaria blips espalhados por horas de
 		// desconexao num ERROR falso de "3 falhas consecutivas".
 		p.consecutive.Store(0)
+		// Queda curta (blip, resume em segundos) fica silenciosa; so a partir
+		// de offlineWarnAfter ticks o log ganha 1 linha, depois a cada 10 pra
+		// nao floodar uma queda longa.
+		n := p.offline.Add(1)
+		if n == offlineWarnAfter || (n > offlineWarnAfter && n%10 == 0) {
+			p.log.Warn("gateway offline", "ticks", n, "for", time.Duration(n)*p.interval)
+		}
 		return
+	}
+	if prev := p.offline.Swap(0); prev >= offlineWarnAfter {
+		p.log.Info("gateway back", "offline_ticks", prev)
 	}
 	if err := p.push(ctx, latency); err != nil {
 		// Uma falha isolada de push nao deve virar WARN nem beat perdido: o
