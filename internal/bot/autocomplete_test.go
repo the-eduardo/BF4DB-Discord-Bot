@@ -104,7 +104,9 @@ func TestSuggestSkipsQueriesNotWorthARequest(t *testing.T) {
 		t.Error("no request should be made")
 	})
 
-	for _, q := range []string{"", "ed", "1.1.1.1", "988768601"} {
+	// "日" (3 bytes, 1 rune) and "дв" (4 bytes, 2 runes) are both under
+	// minAutocompleteLen in RUNES, but len() (bytes) used to let them through.
+	for _, q := range []string{"", "ed", "1.1.1.1", "988768601", "日", "дв"} {
 		if got := b.suggest(q); got != nil {
 			t.Errorf("suggest(%q) = %+v, want nil", q, got)
 		}
@@ -305,5 +307,30 @@ func TestHandleAutocompleteDoesNotLogTheInteractionToken(t *testing.T) {
 	// Positive control: proves the failure path actually ran.
 	if !hasLogRecord(logs, "WARN", "autocomplete response failed") {
 		t.Fatalf("the rejection was not logged, so the assertion above proves nothing: %s", out)
+	}
+}
+
+// TestHandleAutocompleteSkipsShortNonASCIIQueries is the wiring counterpart of
+// the rune-count cases added to TestSuggestSkipsQueriesNotWorthARequest: that
+// test proves b.suggest itself rejects "日"/"дв", this one proves the rejection
+// happens on the real Discord entry point (handleAutocomplete), not just in
+// the helper. It goes in through the same InteractionCreate path production
+// uses, exactly like TestHandleAutocompleteLogsRejectionAtWarn above.
+func TestHandleAutocompleteSkipsShortNonASCIIQueries(t *testing.T) {
+	b := newTestBot()
+	withWebStub(t, b, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no request should be made for a query under minAutocompleteLen")
+	})
+
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	// InteractionRespond isn't what's under test here, so let it fail quietly
+	// off the network rather than reaching Discord.
+	s.Client = &http.Client{Transport: failingTransport{}}
+
+	for _, q := range []string{"日", "дв"} {
+		b.handleAutocomplete(s, autocompleteInteraction(q))
 	}
 }
