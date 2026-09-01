@@ -231,3 +231,39 @@ func TestErrorStillRaisedOnTrulyConsecutiveFailures(t *testing.T) {
 		t.Errorf("esperava um registro ERROR com consecutive=3, veio: %s", out)
 	}
 }
+
+// O gotcha que este teste prova: pushIfAlive lia alive() uma unica vez e
+// reenviava "up" no retry mesmo que o gateway tivesse caido durante a espera
+// de retryDelay -- uma mentira ao Kuma exatamente no cenario que o dead-man
+// switch existe pra pegar (a janela de mentira quadruplicou quando
+// defaultRetryDelay subiu de 5s para 20s em 26/08/2026).
+func TestNoRetryPushWhenGatewayDropsDuringRetryDelay(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	p := NewPusher(srv.URL, testLogger())
+	p.retryDelay = time.Millisecond
+
+	var aliveCalls atomic.Int32
+	// 1a chamada (antes da 1a tentativa): gateway ainda conectado. Da 2a em
+	// diante (a recheca antes do retry): gateway caiu durante o retryDelay.
+	alive := func() (bool, time.Duration) {
+		if aliveCalls.Add(1) == 1 {
+			return true, 0
+		}
+		return false, 0
+	}
+
+	p.pushIfAlive(context.Background(), alive)
+
+	if calls.Load() != 1 {
+		t.Errorf("esperava 1 tentativa de push (sem retry mentindo 'up'), veio %d", calls.Load())
+	}
+	if p.consecutive.Load() != 0 {
+		t.Errorf("consecutive deveria zerar quando o gateway cai durante o retryDelay, veio %d", p.consecutive.Load())
+	}
+}
