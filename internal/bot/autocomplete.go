@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -55,8 +56,10 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 
 func (b *Bot) suggest(query string) []*discordgo.ApplicationCommandOptionChoice {
 	// An IP or an id is already an exact query, and short prefixes match half
-	// the database: neither is worth a request.
-	if len(query) < minAutocompleteLen || isIP(query) || isPersonaID(query) {
+	// the database: neither is worth a request. Counting runes, not bytes: a
+	// single non-ASCII character (Cyrillic/CJK names are common in BF4) is
+	// 2-4 bytes but one keystroke, and len() let it clear the gate early.
+	if utf8.RuneCountInString(query) < minAutocompleteLen || isIP(query) || isPersonaID(query) {
 		return nil
 	}
 
