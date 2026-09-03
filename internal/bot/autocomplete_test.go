@@ -131,6 +131,30 @@ func TestSuggestSurvivesAnOutage(t *testing.T) {
 	}
 }
 
+func TestSuggestCachesAFailureInsteadOfRetryingEveryKeystroke(t *testing.T) {
+	b, logs := newTestBotWithLogs()
+	var calls atomic.Int32
+	withWebStub(t, b, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusForbidden) // bf4db.com nos bloqueando
+	})
+
+	if got := b.suggest("eduardo"); got != nil {
+		t.Errorf("suggest sob bloqueio = %+v, want nil", got)
+	}
+	if got := b.suggest("eduardo"); got != nil {
+		t.Errorf("falha cacheada = %+v, want nil", got)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("bateu %d vezes em bf4db.com, want 1", n)
+	}
+	// O bloqueio tem que continuar visivel: cache negativo pode reduzir o
+	// volume de WARN, nao pode silenciar o primeiro.
+	if out := logs.String(); !strings.Contains(out, "autocomplete lookup failed") {
+		t.Errorf("a falha tem que continuar logada uma vez: %s", out)
+	}
+}
+
 // TestSuggestWarnsAfterConsecutiveZeroRowsThroughTheRealCallSite is the wiring
 // counterpart of TestSuggestNamesWarnsAfterConsecutiveZeroRows (bf4db package):
 // that test proves SuggestNames itself counts and warns; this one proves

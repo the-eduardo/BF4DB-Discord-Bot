@@ -77,6 +77,11 @@ func (b *Bot) suggest(query string) []*discordgo.ApplicationCommandOptionChoice 
 		// this is the highest-volume path to bf4db.com and LOG_LEVEL=info in
 		// production hides Debug entirely — a block/outage would be silent.
 		b.log.Warn("autocomplete lookup failed", "err", redact.Err(err))
+		// Cache negativo: um bloqueio (403) responde a CADA digitacao. Sem
+		// isto, um prefixo bloqueado e' re-pedido a cada retype — o que vira
+		// ban. Mesmo TTL de 60s do acerto; o usuario ve a mesma coisa
+		// (nenhuma sugestao) nos dois casos.
+		b.suggestions.Set(key, nil)
 		return nil
 	}
 
