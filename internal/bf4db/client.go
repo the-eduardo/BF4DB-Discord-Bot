@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // DefaultBaseURL is the public BF4DB API root. Override it with the
@@ -447,7 +448,7 @@ func (c *Client) attempt(ctx context.Context, opts requestOptions, endpoint stri
 		apiErr := &APIError{
 			StatusCode: res.StatusCode,
 			Status:     res.Status,
-			Body:       redactToken(snippet(body), c.token),
+			Body:       snippet(redactToken(string(body), c.token)),
 		}
 		after, hasAfter := parseRetryAfter(res.Header.Get("Retry-After"))
 		switch {
@@ -469,7 +470,7 @@ func (c *Client) attempt(ctx context.Context, opts requestOptions, endpoint stri
 func (c *Client) decode(body []byte, out any) error {
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("bf4db: invalid JSON response (an HTML page here usually means a rejected API token): %w\nbody: %s",
-			err, redactToken(snippet(body), c.token))
+			err, snippet(redactToken(string(body), c.token)))
 	}
 	return nil
 }
@@ -580,12 +581,12 @@ func redactToken(s, token string) string {
 	return tokenParamRe.ReplaceAllString(s, "${1}REDACTED")
 }
 
-func snippet(body []byte) string {
-	s := strings.Join(strings.Fields(string(body)), " ")
-	if len(s) > bodySnippetLimit {
-		return s[:bodySnippetLimit] + "…"
+func snippet(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(s) <= bodySnippetLimit {
+		return s
 	}
-	return s
+	return string([]rune(s)[:bodySnippetLimit-1]) + "…"
 }
 
 func mustInt(s string) int {

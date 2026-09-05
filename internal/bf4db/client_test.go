@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -366,6 +367,46 @@ func TestHTMLResponseYieldsHelpfulRedactedError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), token) {
 		t.Error("error leaks the API token")
+	}
+}
+
+func TestDecodeErrorKeepsValidUTF8(t *testing.T) {
+	// "a" (1 byte) + 300 "€" (3 bytes each) guarantees the byte-240 cutoff
+	// used to fall in the middle of a multi-byte rune.
+	body := "a" + strings.Repeat("€", 300)
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, body)
+	}))
+
+	_, err := c.SearchIP(context.Background(), "1.1.1.1")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Errorf("error message contains invalid UTF-8: %q", err.Error())
+	}
+	if n := utf8.RuneCountInString(err.Error()); n > 1000 {
+		t.Errorf("error message unexpectedly long (%d runes), snippet limit not applied: %v", n, err)
+	}
+}
+
+func TestDecodeErrorRedactsATokenSplitByTheCut(t *testing.T) {
+	// The token starts at byte 220 and runs to 284, straddling the
+	// byte-240 snippet cutoff with no "api_token=" prefix to save it.
+	body := strings.Repeat("x", 220) + token
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, body)
+	}))
+
+	_, err := c.SearchIP(context.Background(), "1.1.1.1")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if !strings.Contains(err.Error(), "REDACTED") {
+		t.Errorf("want REDACTED marker, got %v", err)
+	}
+	if strings.Contains(err.Error(), token[:20]) {
+		t.Errorf("error leaks a prefix of the API token: %v", err)
 	}
 }
 
