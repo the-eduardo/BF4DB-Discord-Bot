@@ -3,7 +3,7 @@
 # Build stage. TARGETARCH comes from buildx, so the same Dockerfile produces
 # amd64 and arm64 images — the old build hardcoded amd64 and would not run on
 # an ARM host.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/bf4db-bot .
 
 # Final stage
-FROM alpine:3.21
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata \
     && adduser -D -u 10001 bot
