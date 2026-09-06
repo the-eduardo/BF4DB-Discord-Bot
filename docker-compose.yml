@@ -7,6 +7,16 @@ services:
     image: ghcr.io/the-eduardo/bf4db-discord-bot:latest
     container_name: bf4db-bot
     restart: unless-stopped
+    # Sem endpoint HTTP: o sinal de vida e a conexao WSS persistente com o gateway
+    # do Discord. Pega o caso que o `restart` nao pega — processo vivo, gateway
+    # perdido (ex.: travado num scrape depois que o site do BF4DB mudar).
+    # 3 falhas de 60s toleram o reconnect normal do discordgo.
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -tn | grep -q ':443 .*ESTABLISHED'"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     environment:
@@ -24,6 +34,9 @@ services:
     # contido, em vez de derrubar o host.
     mem_limit: 128m
     pids_limit: 64
+    # Cinto de seguranca contra loop descontrolado (a Main tem CPU de
+    # sobra; isto nao e' resposta a pressao de recurso).
+    cpus: "1.0"
     logging:
       driver: json-file
       options:
