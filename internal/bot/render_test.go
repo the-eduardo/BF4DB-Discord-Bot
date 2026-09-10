@@ -244,6 +244,38 @@ func TestSanitizeStripsInvisibleButKeepsTheMentionDefence(t *testing.T) {
 	}
 }
 
+// TestResultEmbedTitleCapped guards Discord's embed.title limit (400:
+// BASE_TYPE_MAX_LENGTH rejects anything over 256 chars). Without the cap, a
+// long query ends up in a title the API rejects, and the deferred
+// interaction is never edited — the user is left staring at "thinking…"
+// forever (bot.go's edit() logs the error but has nothing to show instead).
+func TestResultEmbedTitleCapped(t *testing.T) {
+	title := "Busca: " + strings.Repeat("A", 400)
+	embed := resultEmbed(title, nil, testTime)
+	if n := utf8.RuneCountInString(embed.Title); n > maxEmbedTitle {
+		t.Errorf("title is %d runes, over Discord's %d limit", n, maxEmbedTitle)
+	}
+}
+
+func TestErrorEmbedTitleCapped(t *testing.T) {
+	title := "Busca: " + strings.Repeat("A", 400)
+	embed := errorEmbed(title, errors.New("x"))
+	if n := utf8.RuneCountInString(embed.Title); n > maxEmbedTitle {
+		t.Errorf("title is %d runes, over Discord's %d limit", n, maxEmbedTitle)
+	}
+}
+
+// TestSanitizeExpandsPastCap pins why the title cap has to run AFTER
+// sanitize, not as a limit on the raw query: sanitize's markup escaping
+// (* -> \*) more than doubles a string of asterisks, so a query well under
+// 256 chars can still produce a title over the limit once sanitized.
+func TestSanitizeExpandsPastCap(t *testing.T) {
+	in := strings.Repeat("*", 150)
+	if got := utf8.RuneCountInString(sanitize(in)); got <= maxEmbedTitle {
+		t.Fatalf("sanitized length = %d, want > %d (test no longer demonstrates expansion past the cap)", got, maxEmbedTitle)
+	}
+}
+
 func TestChoiceLabelStripsInvisible(t *testing.T) {
 	if got := choiceLabel(bf4db.Player{Name: "ed\u202euardo"}); got != "eduardo" {
 		t.Errorf("choiceLabel = %q, want %q", got, "eduardo")

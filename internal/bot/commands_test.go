@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -152,6 +153,29 @@ func TestLookupFallsBackToWebsiteOnCloudflare5xx(t *testing.T) {
 	}
 	if len(players) != 1 || players[0].PersonaID() != 172015112 {
 		t.Errorf("players = %+v", players)
+	}
+}
+
+// TestPaginatedTitleCapped é a fiação do teto de título, não a função pura:
+// resultEmbed() já tem o próprio teste em render_test.go, mas o caminho real
+// que handleSearch chama é b.paginated (commands.go:166), e um corte
+// introduzido só no construtor de embed isolado não prova que a paginação —
+// que reusa o título guardado no cache por 15min — também fica coberta.
+func TestPaginatedTitleCapped(t *testing.T) {
+	b := newTestBot()
+
+	longTitle := "Busca: " + strings.Repeat("A", 400)
+	var players []bf4db.Player
+	for i := range 12 { // > pageSize (5), força o caminho paginado
+		players = append(players, bf4db.Player{PlayerID: bf4db.FlexInt(i + 1), Name: fmt.Sprintf("p%d", i)})
+	}
+
+	embed, comps := b.paginated(longTitle, players, testTime, "u1")
+	if n := utf8.RuneCountInString(embed.Title); n > maxEmbedTitle {
+		t.Errorf("title is %d runes, over Discord's %d limit", n, maxEmbedTitle)
+	}
+	if len(comps) == 0 {
+		t.Fatalf("test setup did not trigger pagination, adjust the player count")
 	}
 }
 
