@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -16,6 +17,14 @@ import (
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/kuma"
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
 )
+
+// maxMessageChars is Discord's per-MESSAGE embed budget, not per-embed: the API
+// sums title+description+field.name+field.value+footer.text+author.name across
+// every embed attached to the message and rejects the whole edit above 6000.
+// render.go's maxEmbedChars (5500) only bounds a single embed — handleSearch can
+// attach two (global-search + discord-user) to the same edit, and two embeds
+// each near their own budget comfortably clear the combined one.
+const maxMessageChars = 5900
 
 // Cache budgets. Lookups are cached long enough to absorb a channel checking
 // the same suspect repeatedly; result sets only need to outlive the buttons.
@@ -207,6 +216,7 @@ func (b *Bot) edit(s *discordgo.Session, i *discordgo.InteractionCreate, embeds 
 			Color:       colorUnknown,
 		}}
 	}
+	embeds = fitEmbeds(embeds)
 	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds:          &embeds,
 		Components:      &components,
@@ -214,6 +224,78 @@ func (b *Bot) edit(s *discordgo.Session, i *discordgo.InteractionCreate, embeds 
 	}); err != nil {
 		b.log.Error("editing response", "err", redact.Err(err))
 	}
+}
+
+// embedChars sums exactly the fields Discord counts toward the 6000-char
+// message-wide embed budget: title, description, footer text, author name and
+// every field's name+value. Counted in runes, matching truncate() elsewhere in
+// this package — Discord's own limit is rune-based, not byte-based.
+func embedChars(e *discordgo.MessageEmbed) int {
+	n := utf8.RuneCountInString(e.Title) + utf8.RuneCountInString(e.Description)
+	if e.Footer != nil {
+		n += utf8.RuneCountInString(e.Footer.Text)
+	}
+	if e.Author != nil {
+		n += utf8.RuneCountInString(e.Author.Name)
+	}
+	for _, f := range e.Fields {
+		n += utf8.RuneCountInString(f.Name) + utf8.RuneCountInString(f.Value)
+	}
+	return n
+}
+
+// fitEmbeds trims embeds, in order, to fit under maxMessageChars combined.
+// Each embed already sits under the per-embed budget on its own (render.go);
+// this only matters once two land in the same edit. The first embed to blow
+// the remaining budget loses fields from the end until it fits; if it still
+// doesn't fit with zero fields, it's dropped entirely rather than sent
+// truncated to nothing.
+func fitEmbeds(embeds []*discordgo.MessageEmbed) []*discordgo.MessageEmbed {
+	fitted := make([]*discordgo.MessageEmbed, 0, len(embeds))
+	remaining := maxMessageChars
+	for _, e := range embeds {
+		fe, n, ok := fitEmbed(e, remaining)
+		if !ok {
+			continue
+		}
+		fitted = append(fitted, fe)
+		remaining -= n
+	}
+	return fitted
+}
+
+// fitEmbed drops e's trailing fields until embedChars fits within budget,
+// marking the footer once a field is actually cut so the truncation isn't
+// silent. Returns ok=false when even an empty embed doesn't fit the budget.
+func fitEmbed(e *discordgo.MessageEmbed, budget int) (fitted *discordgo.MessageEmbed, chars int, ok bool) {
+	trimmed := *e
+	fields := e.Fields
+	cut := false
+	for {
+		trimmed.Fields = fields
+		n := embedChars(&trimmed)
+		if n <= budget {
+			return &trimmed, n, true
+		}
+		if len(fields) == 0 {
+			return nil, 0, false
+		}
+		fields = fields[:len(fields)-1]
+		if !cut {
+			cut = true
+			trimmed.Footer = truncatedFooter(e.Footer)
+		}
+	}
+}
+
+// truncatedFooter marks that an embed lost fields to the message-wide budget,
+// preserving whatever footer text (e.g. pagination) was already there.
+func truncatedFooter(existing *discordgo.MessageEmbedFooter) *discordgo.MessageEmbedFooter {
+	const note = "resposta truncada"
+	if existing == nil || existing.Text == "" {
+		return &discordgo.MessageEmbedFooter{Text: note}
+	}
+	return &discordgo.MessageEmbedFooter{Text: existing.Text + " • " + note}
 }
 
 func scope(guildID string) string {
