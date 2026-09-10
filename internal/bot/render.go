@@ -18,6 +18,7 @@ const (
 	maxEmbedChars  = 5500 // below the 6000 hard limit, leaving room for titles
 	maxFieldValue  = 1024
 	maxFieldName   = 256
+	maxEmbedTitle  = 256 // Discord: embed title
 )
 
 // Embed colours per ban status.
@@ -33,7 +34,7 @@ const (
 // containing %s or Discord markup used to corrupt the whole message.
 func resultEmbed(title string, players []bf4db.Player, now time.Time) *discordgo.MessageEmbed {
 	embed := &discordgo.MessageEmbed{
-		Title:     title,
+		Title:     truncate(title, maxEmbedTitle),
 		Color:     colorUnknown,
 		Timestamp: now.Format(time.RFC3339),
 	}
@@ -42,7 +43,7 @@ func resultEmbed(title string, players []bf4db.Player, now time.Time) *discordgo
 		return embed
 	}
 
-	size := utf8.RuneCountInString(title)
+	size := utf8.RuneCountInString(embed.Title)
 	shown := 0
 	for _, p := range players {
 		if shown >= maxEmbedFields {

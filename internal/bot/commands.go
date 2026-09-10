@@ -252,7 +252,7 @@ func errorEmbed(title string, err error) *discordgo.MessageEmbed {
 	}
 
 	return &discordgo.MessageEmbed{
-		Title:       title,
+		Title:       truncate(title, maxEmbedTitle),
 		Description: description,
 		Color:       colorReview,
 	}
