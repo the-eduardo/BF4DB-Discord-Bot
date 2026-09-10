@@ -280,7 +280,7 @@ func TestSearchNameWebLogsWhenScrapeMatchesNothing(t *testing.T) {
 	})
 
 	c := newNameSearchClient(t, api, web, WithLogger(log))
-	players, err := c.SearchName(context.Background(), "eduardo")
+	players, err := c.SearchName(context.Background(), "jogador-sigiloso")
 	if err != nil {
 		t.Fatalf("SearchName: %v", err)
 	}
@@ -292,8 +292,13 @@ func TestSearchNameWebLogsWhenScrapeMatchesNothing(t *testing.T) {
 	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "bf4db web search returned zero rows") {
 		t.Fatalf("expected an ERROR log line for the zero-row scrape, got: %q", out)
 	}
-	if !strings.Contains(out, "name=eduardo") {
-		t.Errorf("log line missing name field: %q", out)
+	// A convencao do repo (commands.go) e' nunca logar o que as pessoas
+	// pesquisam: o nome bruto nao pode chegar a este log, so o tamanho dele.
+	if strings.Contains(out, "jogador-sigiloso") {
+		t.Errorf("log line leaks the searched name: %q", out)
+	}
+	if !strings.Contains(out, "name_len=16") {
+		t.Errorf("log line missing name_len field: %q", out)
 	}
 	if !strings.Contains(out, "body_len=") {
 		t.Errorf("log line missing body_len field: %q", out)
