@@ -118,9 +118,15 @@ func (p *Pusher) pushIfAlive(ctx context.Context, alive func() (bool, time.Durat
 		}
 		if err = p.push(ctx, latency); err != nil {
 			n := p.consecutive.Add(1)
-			if n >= 3 {
+			// Opcao (b), aprovada 28/08/2026: a 1a falha consecutiva e' Info (o
+			// 404 pos-cleanup do Kuma que o retryDelay ja existe pra absorver),
+			// a 2a sobe pra Warn, e so a partir da 3a vira Error de verdade.
+			switch {
+			case n >= 3:
 				p.log.Error("kuma push failed twice in a row", "err", redact.Err(err), "consecutive", n)
-			} else {
+			case n == 1:
+				p.log.Info("kuma push failed twice in a row", "err", redact.Err(err), "consecutive", n)
+			default:
 				p.log.Warn("kuma push failed twice in a row", "err", redact.Err(err), "consecutive", n)
 			}
 			return
