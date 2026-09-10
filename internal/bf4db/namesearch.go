@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // DefaultWebBaseURL is the site root used for the by-name fallback.
@@ -68,7 +69,7 @@ func (c *Client) searchNameWeb(ctx context.Context, name string, limit int) ([]P
 		// looks identical to a genuine "no matches" response. This is the only
 		// signal that separates the two, since the caller sees "no results"
 		// either way.
-		c.log.Error("bf4db web search returned zero rows", "name", name, "body_len", len(body))
+		c.log.Error("bf4db web search returned zero rows", "name_len", utf8.RuneCountInString(name), "body_len", len(body))
 		return nil, nil
 	}
 	if len(hits) > limit {
