@@ -154,6 +154,37 @@ func TestPushIfAliveCountsConsecutiveFailuresAfterBothAttemptsFail(t *testing.T)
 	}
 }
 
+// TestConsecutiveFailureLevelsEscalate prova a opcao (b) aprovada 28/08/2026:
+// a 1a falha consecutiva e' Info, a 2a sobe pra Warn, e so a partir da 3a
+// vira Error -- hoje (antes deste fix) a 1a e a 2a saiam as duas como Warn.
+func TestConsecutiveFailureLevelsEscalate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	log, logs := testLoggerWithBuffer()
+	p := NewPusher(srv.URL, log)
+	p.retryDelay = time.Millisecond
+
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, 0 })
+	if out := logs.String(); !strings.Contains(out, `"level":"INFO"`) || !strings.Contains(out, `"consecutive":1`) {
+		t.Errorf("1a falha esperava INFO com consecutive=1, veio: %s", out)
+	}
+	if strings.Contains(logs.String(), `"level":"WARN"`) || strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Errorf("1a falha nao deveria emitir WARN nem ERROR, veio: %s", logs.String())
+	}
+
+	p.pushIfAlive(context.Background(), func() (bool, time.Duration) { return true, 0 })
+	out := logs.String()
+	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"consecutive":2`) {
+		t.Errorf("2a falha esperava WARN com consecutive=2, veio: %s", out)
+	}
+	if strings.Contains(out, `"level":"ERROR"`) {
+		t.Errorf("2a falha nao deveria emitir ERROR ainda, veio: %s", out)
+	}
+}
+
 func TestPushReportsBadStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
