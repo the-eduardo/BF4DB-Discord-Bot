@@ -140,7 +140,20 @@ func (b *Bot) liveness() (bool, time.Duration) {
 	if !b.connected.Load() {
 		return false, 0
 	}
-	return true, b.session.HeartbeatLatency()
+	return true, b.heartbeat()
+}
+
+// heartbeat reports the last heartbeat latency, never negative: discordgo
+// computes LastHeartbeatAck.Sub(LastHeartbeatSent), and Ack is only updated on
+// the gateway's Op 11 — between sending a heartbeat and receiving its ack
+// (one RTT) the subtraction goes against the previous cycle's Ack and comes
+// out negative. Zero means "no fresh measurement", which is what the Kuma
+// push and /ping should show instead.
+func (b *Bot) heartbeat() time.Duration {
+	if d := b.session.HeartbeatLatency(); d > 0 {
+		return d
+	}
+	return 0
 }
 
 func (b *Bot) registerCommands() ([]*discordgo.ApplicationCommand, error) {
