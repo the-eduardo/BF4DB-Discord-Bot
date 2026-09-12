@@ -142,6 +142,18 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 		}
 	}
 
+	// global-search paginates and discord-user does not: keep the second
+	// embed alongside the stored result set, or handleComponent drops it the
+	// first time someone turns the page.
+	if len(embeds) > 1 {
+		if key, ok := paginationKey(components); ok {
+			if set, found := b.results.Get(key); found {
+				set.extra = embeds[1:]
+				b.results.Set(key, set)
+			}
+		}
+	}
+
 	b.edit(s, i, embeds, components)
 }
 

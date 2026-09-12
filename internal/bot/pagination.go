@@ -29,6 +29,12 @@ type resultSet struct {
 	players []bf4db.Player
 	created time.Time
 	owner   string // discord user id that ran the search; "" = unowned
+
+	// extra holds embeds from the same response that do not paginate (the
+	// discord-user lookup run alongside global-search): handleComponent
+	// replaces the whole embed list on InteractionResponseUpdateMessage, so
+	// without keeping these around a page turn silently drops them.
+	extra []*discordgo.MessageEmbed
 }
 
 // interactionUserID returns who triggered an interaction, whether it came
@@ -115,6 +121,25 @@ func paginationComponents(key string, page, total int) []discordgo.MessageCompon
 	}
 }
 
+// paginationKey recovers the result-set key stored by Bot.paginated from the
+// components it returned, so a caller that also has non-paginated embeds in
+// the same response can attach them to that set as extras.
+func paginationKey(components []discordgo.MessageComponent) (string, bool) {
+	if len(components) == 0 {
+		return "", false
+	}
+	row, ok := components[0].(discordgo.ActionsRow)
+	if !ok || len(row.Components) < 3 {
+		return "", false
+	}
+	next, ok := row.Components[2].(discordgo.Button)
+	if !ok {
+		return "", false
+	}
+	key, _, ok := parseCustomID(next.CustomID)
+	return key, ok
+}
+
 // parseCustomID reads back the key and page a button carries.
 func parseCustomID(customID string) (key string, page int, ok bool) {
 	rest, found := strings.CutPrefix(customID, customIDPrefix)
@@ -155,10 +180,12 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		Text: fmt.Sprintf("Página %d de %d • %d contas", page+1, pageCount(len(set.players)), len(set.players)),
 	}
 
+	embeds := append([]*discordgo.MessageEmbed{embed}, set.extra...)
+
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
-			Embeds:          []*discordgo.MessageEmbed{embed},
+			Embeds:          embeds,
 			Components:      paginationComponents(key, page, len(set.players)),
 			AllowedMentions: &discordgo.MessageAllowedMentions{},
 		},
