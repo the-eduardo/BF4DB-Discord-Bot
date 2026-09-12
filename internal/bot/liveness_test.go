@@ -1,6 +1,10 @@
 package bot
 
 import (
+	"io"
+	"net/http"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,5 +44,68 @@ func TestLivenessUsesTheClampedHeartbeat(t *testing.T) {
 	ok, lat := b.liveness()
 	if !ok || lat < 0 {
 		t.Fatalf("liveness() = (%v, %v), want (true, >= 0)", ok, lat)
+	}
+}
+
+// capturingTransport records the body of every PATCH (InteractionResponseEdit
+// hits the API with PATCH) and answers every request with an empty, valid
+// JSON body so discordgo's response decoding doesn't fail the test.
+type capturingTransport struct {
+	mu    sync.Mutex
+	edits [][]byte
+}
+
+func (c *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPatch {
+		body, _ := io.ReadAll(req.Body)
+		c.mu.Lock()
+		c.edits = append(c.edits, body)
+		c.mu.Unlock()
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestHandlePingUsesClampedHeartbeat é a fiação que faltava: prova que o /ping
+// de fato entregue ao Discord (handlePing, commands.go) usa b.heartbeat()
+// clampado para montar "API: Xms", e não s.HeartbeatLatency() lida direto da
+// *discordgo.Session recebida como parâmetro — o caminho que a mutação de
+// commands.go revelou não estar coberto por nenhum teste anterior.
+func TestHandlePingUsesClampedHeartbeat(t *testing.T) {
+	b := newTestBot()
+	now := time.Now().UTC()
+	// b.session (o campo do Bot, o que heartbeat() lê) está no meio do ciclo:
+	// HeartbeatLatency() crua aqui seria negativa.
+	b.session = &discordgo.Session{LastHeartbeatSent: now, LastHeartbeatAck: now.Add(-41250 * time.Millisecond)}
+
+	transport := &capturingTransport{}
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	s.Client = &http.Client{Transport: transport}
+
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		AppID: "1027015041326788659",
+		Token: "TESTTOKEN",
+	}}
+
+	b.handlePing(s, i)
+
+	if len(transport.edits) != 1 {
+		t.Fatalf("esperava exatamente 1 edit, recebi %d", len(transport.edits))
+	}
+	body := string(transport.edits[0])
+	if strings.Contains(body, "-41") {
+		t.Errorf("handlePing mandou a latência negativa crua: %s", body)
+	}
+	// Controle positivo: prova que o campo "API: Xms" chegou de fato com o
+	// valor clampado, não que ele sumiu do corpo (o que também "passaria").
+	if !strings.Contains(body, "API: 0ms") {
+		t.Fatalf("esperava 0ms clampado no corpo, recebi: %s", body)
 	}
 }
