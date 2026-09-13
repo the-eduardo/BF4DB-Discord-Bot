@@ -65,7 +65,7 @@ func (b *Bot) handlePing(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	content := fmt.Sprintf("🏓 Pong!\nAPI: %dms\nBot: %dms",
-		s.HeartbeatLatency().Milliseconds(), time.Since(start).Milliseconds())
+		b.heartbeat().Milliseconds(), time.Since(start).Milliseconds())
 	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content}); err != nil {
 		b.log.Error("ping: edit failed", "err", redact.Err(err))
 	}

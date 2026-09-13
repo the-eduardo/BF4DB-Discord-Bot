@@ -140,7 +140,26 @@ func (b *Bot) liveness() (bool, time.Duration) {
 	if !b.connected.Load() {
 		return false, 0
 	}
-	return true, b.session.HeartbeatLatency()
+	return true, b.heartbeat()
+}
+
+// heartbeat reports the last heartbeat latency, never negative: discordgo
+// computes LastHeartbeatAck.Sub(LastHeartbeatSent), and Ack is only updated on
+// the gateway's Op 11 — between sending a heartbeat and receiving its ack
+// (one RTT) the subtraction goes against the previous cycle's Ack and comes
+// out negative. Zero means "no fresh measurement", which is what the Kuma
+// push and /ping should show instead.
+func (b *Bot) heartbeat() time.Duration {
+	d := b.session.HeartbeatLatency()
+	if d > 0 {
+		return d
+	}
+	// O clamp apaga o único sinal in-band de gateway zumbi: quando os Op 11
+	// param, a latência crua fica cada vez mais negativa até o discordgo
+	// reconectar. Nenhum alerta se perde (o Kuma alerta por AUSÊNCIA de push),
+	// mas sem isto o sintoma some por completo.
+	b.log.Debug("heartbeat sem medicao fresca", "raw_ms", d.Milliseconds())
+	return 0
 }
 
 func (b *Bot) registerCommands() ([]*discordgo.ApplicationCommand, error) {
