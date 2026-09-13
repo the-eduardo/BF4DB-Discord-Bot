@@ -120,7 +120,11 @@ func choiceLabel(p bf4db.Player) string {
 		name = "(sem nome)"
 	}
 	if p.Banned() {
-		if reason := strings.TrimSpace(p.BanReason); reason != "" {
+		// BanReason comes from the same scraped row as Name (webBanRe in
+		// namesearch.go, same page as webNameRe), so it needs the same
+		// invisible-character defence applied above — a bidi override or
+		// zero-width padding in the tooltip would render just as misleading.
+		if reason := strings.TrimSpace(stripInvisible(p.BanReason)); reason != "" {
 			return fmt.Sprintf("%s — banido (%s)", name, reason)
 		}
 		return name + " — banido"

@@ -286,3 +286,20 @@ func TestChoiceLabelStripsInvisible(t *testing.T) {
 		t.Errorf("choiceLabel(invisible-only) = %q, want %q", got, "(sem nome)")
 	}
 }
+
+// BanReason comes from the same scraped row as Name (webBanRe vs. webNameRe
+// in namesearch.go, same tooltip on the same page), so it needs the same
+// invisible-character defence \u2014 a bidi override in the ban reason renders a
+// misleading label exactly like one in the name would.
+func TestChoiceLabelStripsInvisibleFromBanReason(t *testing.T) {
+	p := bf4db.Player{Name: "eduardo", IsBanned: bf4db.BanActive, BanReason: "Aim\u202ebot"}
+	if got := choiceLabel(p); got != "eduardo \u2014 banido (Aimbot)" {
+		t.Errorf("choiceLabel = %q", got)
+	}
+	// A reason made only of invisible characters must fall back to the
+	// unparenthesized suffix, not render an empty "(...)" pair.
+	p.BanReason = "\u200b\ufeff"
+	if got := choiceLabel(p); got != "eduardo \u2014 banido" {
+		t.Errorf("choiceLabel(invisible-only reason) = %q", got)
+	}
+}

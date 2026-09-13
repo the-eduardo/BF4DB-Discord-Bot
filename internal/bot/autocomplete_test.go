@@ -232,6 +232,34 @@ func TestSuggestNeverEmitsEmptyChoiceName(t *testing.T) {
 	}
 }
 
+// suggestPageBanReasonInvisible mimics a scraped banned row whose tooltip
+// (webBanRe in namesearch.go, same page as webNameRe) carries a bidi override,
+// exactly the kind of markup a scraped Name already defends against.
+const suggestPageBanReasonInvisible = `<table><tbody>
+<tr><td class="player-td-image"><a href="/player/333"><img></a></td>
+    <td class="player-td-name"><a href="/player/333">eduardo</a></td>
+    <td class="pull-right"><a href="https://bf4db.com/player/ban/333" data-original-title="Aim&#x202e;bot">Banned</a></td></tr>
+</tbody></table>`
+
+// TestSuggestStripsInvisibleFromBanReason exercises the full chain (scraper
+// -> suggest -> choiceLabel), not just choiceLabel in isolation: it pins that
+// html.UnescapeString decodes the bidi override before it reaches the label,
+// and that the label formatter strips it same as it does for Name.
+func TestSuggestStripsInvisibleFromBanReason(t *testing.T) {
+	b := newTestBot()
+	withWebStub(t, b, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, suggestPageBanReasonInvisible)
+	})
+
+	got := b.suggest("eduardo")
+	if len(got) != 1 {
+		t.Fatalf("got %d choices, want 1", len(got))
+	}
+	if got[0].Name != "eduardo — banido (Aimbot)" {
+		t.Errorf("label = %q, want %q", got[0].Name, "eduardo — banido (Aimbot)")
+	}
+}
+
 // failingTransport makes every Discord REST call fail at the transport layer,
 // which is what an InteractionRespond rejection looks like from inside
 // handleAutocomplete.
