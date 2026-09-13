@@ -150,9 +150,15 @@ func (b *Bot) liveness() (bool, time.Duration) {
 // out negative. Zero means "no fresh measurement", which is what the Kuma
 // push and /ping should show instead.
 func (b *Bot) heartbeat() time.Duration {
-	if d := b.session.HeartbeatLatency(); d > 0 {
+	d := b.session.HeartbeatLatency()
+	if d > 0 {
 		return d
 	}
+	// O clamp apaga o único sinal in-band de gateway zumbi: quando os Op 11
+	// param, a latência crua fica cada vez mais negativa até o discordgo
+	// reconectar. Nenhum alerta se perde (o Kuma alerta por AUSÊNCIA de push),
+	// mas sem isto o sintoma some por completo.
+	b.log.Debug("heartbeat sem medicao fresca", "raw_ms", d.Milliseconds())
 	return 0
 }
 

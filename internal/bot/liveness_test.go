@@ -45,17 +45,28 @@ func TestLivenessUsesTheClampedHeartbeat(t *testing.T) {
 	if !ok || lat < 0 {
 		t.Fatalf("liveness() = (%v, %v), want (true, >= 0)", ok, lat)
 	}
+
+	// Caso positivo: a asserção acima só reprova latência negativa, então um
+	// liveness() que devolvesse ping fixo 0 para sempre passaria por ela — e é
+	// esse valor que vai ao push do Kuma. A medida saudável tem de atravessar
+	// liveness() intacta.
+	b.session = &discordgo.Session{LastHeartbeatSent: now.Add(-150 * time.Millisecond), LastHeartbeatAck: now}
+	if ok, lat := b.liveness(); !ok || lat != 150*time.Millisecond {
+		t.Fatalf("liveness() = (%v, %v), want (true, 150ms)", ok, lat)
+	}
 }
 
-// capturingTransport records the body of every PATCH (InteractionResponseEdit
-// hits the API with PATCH) and answers every request with an empty, valid
-// JSON body so discordgo's response decoding doesn't fail the test.
-type capturingTransport struct {
+// pingCapturingTransport records the body of every PATCH
+// (InteractionResponseEdit hits the API with PATCH) and answers every request
+// with an empty, valid JSON body so discordgo's response decoding doesn't fail
+// the test. The name is prefixed because internal/bot has more than one
+// capturing transport across test files and they share the package namespace.
+type pingCapturingTransport struct {
 	mu    sync.Mutex
 	edits [][]byte
 }
 
-func (c *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (c *pingCapturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method == http.MethodPatch {
 		body, _ := io.ReadAll(req.Body)
 		c.mu.Lock()
@@ -82,7 +93,7 @@ func TestHandlePingUsesClampedHeartbeat(t *testing.T) {
 	// HeartbeatLatency() crua aqui seria negativa.
 	b.session = &discordgo.Session{LastHeartbeatSent: now, LastHeartbeatAck: now.Add(-41250 * time.Millisecond)}
 
-	transport := &capturingTransport{}
+	transport := &pingCapturingTransport{}
 	s, err := discordgo.New("Bot token-de-teste")
 	if err != nil {
 		t.Fatalf("discordgo.New: %v", err)
@@ -107,5 +118,15 @@ func TestHandlePingUsesClampedHeartbeat(t *testing.T) {
 	// valor clampado, não que ele sumiu do corpo (o que também "passaria").
 	if !strings.Contains(body, "API: 0ms") {
 		t.Fatalf("esperava 0ms clampado no corpo, recebi: %s", body)
+	}
+
+	// Segundo caso, positivo: exigir só "API: 0ms" deixaria passar um
+	// handlePing com a latência hardcoded em zero. Com a sessão do Bot medindo
+	// 150ms, esse valor tem de chegar ao corpo enviado ao Discord.
+	b.session = &discordgo.Session{LastHeartbeatSent: now.Add(-150 * time.Millisecond), LastHeartbeatAck: now}
+	transport.edits = nil
+	b.handlePing(s, i)
+	if len(transport.edits) != 1 || !strings.Contains(string(transport.edits[0]), "API: 150ms") {
+		t.Fatalf("latência saudável não chegou ao corpo: %s", transport.edits)
 	}
 }
