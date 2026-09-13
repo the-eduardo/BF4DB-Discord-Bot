@@ -159,3 +159,100 @@ func TestFitEmbedsDropsWholeEmbedWhenNoBudgetLeft(t *testing.T) {
 		t.Errorf("the surviving embed changed: %q", fitted[0].Title)
 	}
 }
+
+// TestEditFallsBackWhenFitEmbedsEmptiesTheList cobre a ordem entre o corte e o
+// fallback de "nenhum embed" dentro de edit(). Com o fallback ANTES de
+// fitEmbeds, este caso mandava `"embeds":[]` ao Discord — o 400 e o
+// "Thinking..." eterno que a mudança existe para evitar. A asserção é sobre o
+// corpo REAL que iria ao Discord, não sobre a fatia em memória.
+func TestEditFallsBackWhenFitEmbedsEmptiesTheList(t *testing.T) {
+	b := newTestBot()
+
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	transport := &capturingTransport{}
+	s.Client = &http.Client{Transport: transport}
+
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		AppID: "1027015041326788659",
+		Token: "tok-de-teste",
+	}}
+
+	// Embed sem campos e maior que o orçamento inteiro: fitEmbed não tem field
+	// nenhum para cortar, então fitEmbeds devolve lista vazia.
+	huge := &discordgo.MessageEmbed{Description: strings.Repeat("a", maxMessageChars+1)}
+	if len(fitEmbeds([]*discordgo.MessageEmbed{huge})) != 0 {
+		t.Fatal("fixture nao esvazia a lista — o teste nao prova nada")
+	}
+
+	b.edit(s, i, []*discordgo.MessageEmbed{huge}, nil)
+
+	if !transport.called {
+		t.Fatal("a requisicao nunca foi enviada — controle positivo falhou")
+	}
+	var payload struct {
+		Embeds []struct {
+			Title string `json:"title"`
+		} `json:"embeds"`
+	}
+	if err := json.Unmarshal(transport.body, &payload); err != nil {
+		t.Fatalf("payload nao decodificou: %v (body=%s)", err, transport.body)
+	}
+	if len(payload.Embeds) != 1 {
+		t.Fatalf("edit mandou %d embeds ao Discord, want 1 (o fallback); body=%s",
+			len(payload.Embeds), transport.body)
+	}
+	if payload.Embeds[0].Title != "Sem resultados" {
+		t.Errorf("embed enviado = %q, want o fallback \"Sem resultados\"", payload.Embeds[0].Title)
+	}
+}
+
+// TestFitEmbedDropsEmbedInsteadOfSendingEmptyBox: um embed que TINHA campos e
+// só caberia sem nenhum deles vira uma caixa vazia (título + rodapé) no
+// Discord. O comentário de fitEmbed sempre prometeu descartar nesse caso; a
+// implementação enviava a caixa.
+func TestFitEmbedDropsEmbedInsteadOfSendingEmptyBox(t *testing.T) {
+	e := &discordgo.MessageEmbed{
+		Title: "Busca",
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "jogador", Value: strings.Repeat("b", 200)},
+		},
+	}
+	// O orçamento tem de caber o embed JÁ esvaziado (título + o rodapé
+	// "resposta truncada" que fitEmbed acrescenta ao cortar) e NÃO caber o
+	// campo. Sem a folga do rodapé o fitEmbed sairia pelo ramo antigo
+	// ("não cabe nem vazio") e o teste passaria sem nunca exercitar a guarda —
+	// foi o que aconteceu na primeira versão deste teste.
+	emptied := *e
+	emptied.Fields = nil
+	emptied.Footer = truncatedFooter(e.Footer)
+	budget := embedChars(&emptied) + 10
+	if budget >= embedChars(e) {
+		t.Fatalf("fixture invalida: o orcamento (%d) ja comporta o embed inteiro (%d)",
+			budget, embedChars(e))
+	}
+
+	fitted, chars, ok := fitEmbed(e, budget)
+	if ok {
+		t.Fatalf("fitEmbed devolveu ok=true com fields=%d chars=%d — caixa vazia foi enviada",
+			len(fitted.Fields), chars)
+	}
+	if fitted != nil {
+		t.Errorf("fitEmbed devolveu embed nao-nil junto com ok=false: %+v", fitted)
+	}
+}
+
+// TestEmbedBudgetsAreCompatible codifica a restrição que hoje é coincidência
+// numérica: fitEmbeds só garante que o PRIMEIRO embed nunca é aparado porque
+// render.go limita um embed a maxEmbedChars (+ maxEmbedTitle) e isso cabe em
+// maxMessageChars. Mexer num dos dois números sem olhar o outro quebra a
+// garantia em silêncio — este teste é o alarme.
+func TestEmbedBudgetsAreCompatible(t *testing.T) {
+	if maxEmbedChars+maxEmbedTitle >= maxMessageChars {
+		t.Fatalf("orçamentos incompatíveis: maxEmbedChars(%d)+maxEmbedTitle(%d) = %d >= maxMessageChars(%d); "+
+			"o primeiro embed passa a poder ser aparado por fitEmbeds",
+			maxEmbedChars, maxEmbedTitle, maxEmbedChars+maxEmbedTitle, maxMessageChars)
+	}
+}

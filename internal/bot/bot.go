@@ -208,7 +208,12 @@ func (b *Bot) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCre
 // edit completes a deferred interaction.
 func (b *Bot) edit(s *discordgo.Session, i *discordgo.InteractionCreate, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent) {
 	// A deferred interaction must be edited with something; an empty payload is
-	// rejected by Discord and the user is left staring at "thinking…".
+	// rejected by Discord and the user is left staring at "thinking…". O corte
+	// vem ANTES do fallback de propósito: fitEmbeds pode zerar a lista (embed
+	// único grande demais até sem campos), e se o fallback rodasse primeiro
+	// esse caso mandaria `"embeds": []` ao Discord — exatamente o 400 e o
+	// "Thinking..." eterno que esta mudança existe para evitar.
+	embeds = fitEmbeds(embeds)
 	if len(embeds) == 0 {
 		embeds = []*discordgo.MessageEmbed{{
 			Title:       "Sem resultados",
@@ -216,7 +221,6 @@ func (b *Bot) edit(s *discordgo.Session, i *discordgo.InteractionCreate, embeds 
 			Color:       colorUnknown,
 		}}
 	}
-	embeds = fitEmbeds(embeds)
 	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds:          &embeds,
 		Components:      &components,
@@ -266,7 +270,10 @@ func fitEmbeds(embeds []*discordgo.MessageEmbed) []*discordgo.MessageEmbed {
 
 // fitEmbed drops e's trailing fields until embedChars fits within budget,
 // marking the footer once a field is actually cut so the truncation isn't
-// silent. Returns ok=false when even an empty embed doesn't fit the budget.
+// silent. Returns ok=false when even an empty embed doesn't fit the budget, or
+// when fitting it would cost every single one of its fields: um embed que
+// tinha conteúdo e sobra só como título+rodapé é uma caixa vazia no Discord,
+// pior que a ausência dele.
 func fitEmbed(e *discordgo.MessageEmbed, budget int) (fitted *discordgo.MessageEmbed, chars int, ok bool) {
 	trimmed := *e
 	fields := e.Fields
@@ -275,6 +282,9 @@ func fitEmbed(e *discordgo.MessageEmbed, budget int) (fitted *discordgo.MessageE
 		trimmed.Fields = fields
 		n := embedChars(&trimmed)
 		if n <= budget {
+			if len(trimmed.Fields) == 0 && len(e.Fields) > 0 {
+				return nil, 0, false
+			}
 			return &trimmed, n, true
 		}
 		if len(fields) == 0 {
