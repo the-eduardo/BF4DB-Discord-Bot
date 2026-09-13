@@ -78,11 +78,29 @@ func resultEmbed(title string, players []bf4db.Player, now time.Time) *discordgo
 	return embed
 }
 
+// playerLines fits the reason to whatever room is left after the links, not
+// the other way around: BanReason comes from bf4db.com uncapped (JSON field or
+// scraped tooltip) and sanitize() can expand it further, so a long reason used
+// to push the three links — the only actionable content in the field — past
+// the 1024-char truncate() in resultEmbed.
 func playerLines(p bf4db.Player, id int, now time.Time) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Motivo: %s • Cheat score: %d\n", sanitize(p.Reason()), int(p.CheatScore))
-	fmt.Fprintf(&b, "[BF4DB](%s) • [Cheat Report](%s) • [BF Agency](%s)",
+	const prefix = "Motivo: "
+	suffix := fmt.Sprintf(" • Cheat score: %d\n", int(p.CheatScore))
+	links := fmt.Sprintf("[BF4DB](%s) • [Cheat Report](%s) • [BF Agency](%s)",
 		bf4db.ProfileURL(id), bf4db.CheatReportURL(id, now), bf4db.AgencyURL(id))
+
+	fixed := utf8.RuneCountInString(prefix) + utf8.RuneCountInString(suffix) + utf8.RuneCountInString(links)
+	budget := maxFieldValue - fixed
+	if budget < 0 {
+		budget = 0
+	}
+	reason := truncate(sanitize(p.Reason()), budget)
+
+	var b strings.Builder
+	b.WriteString(prefix)
+	b.WriteString(reason)
+	b.WriteString(suffix)
+	b.WriteString(links)
 	return b.String()
 }
 

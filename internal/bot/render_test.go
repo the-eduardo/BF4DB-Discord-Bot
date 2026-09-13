@@ -111,6 +111,20 @@ func TestResultEmbedRespectsDiscordLimits(t *testing.T) {
 	if embed.Footer == nil || !strings.Contains(embed.Footer.Text, "de 40") {
 		t.Errorf("footer should report the truncation, got %+v", embed.Footer)
 	}
+
+	// A long BanReason must never push the three action links out of the
+	// field: truncating length alone (asserted above) is not enough to catch
+	// that, since a wall of reason text also respects the 1024-char limit.
+	first := embed.Fields[0].Value
+	if !strings.Contains(first, "bf4db.com/player/") {
+		t.Errorf("field value lost the BF4DB link: %q", first)
+	}
+	if !strings.Contains(first, "bf4cheatreport.com") {
+		t.Errorf("field value lost the Cheat Report link: %q", first)
+	}
+	if !strings.Contains(first, "battlefield.agency") {
+		t.Errorf("field value lost the BF Agency link: %q", first)
+	}
 }
 
 // TestResultEmbedCountsRunesNotBytes guards the size accounting resultEmbed
