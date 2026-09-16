@@ -3,10 +3,12 @@ package bot
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -19,6 +21,14 @@ func stringOption(name, value string) *discordgo.ApplicationCommandInteractionDa
 		Name:  name,
 		Type:  discordgo.ApplicationCommandOptionString,
 		Value: value,
+	}
+}
+
+func userOption(name, userID string) *discordgo.ApplicationCommandInteractionDataOption {
+	return &discordgo.ApplicationCommandInteractionDataOption{
+		Name:  name,
+		Type:  discordgo.ApplicationCommandOptionUser,
+		Value: userID,
 	}
 }
 
@@ -210,5 +220,79 @@ func TestHandleSearchRealQueryIsNotDropped(t *testing.T) {
 	// guarda que só deveria pegar query em branco.
 	if len(rt.bodies) != 2 {
 		t.Fatalf("handleSearch mandou %d respostas, want 2 (defer + edit de uma busca real)", len(rt.bodies))
+	}
+}
+
+// discordSessionTransport intercepta as chamadas do discordgo.Session (usadas
+// por opt.UserValue para resolver o usuário) sem deixar nada sair para a rede;
+// tudo que não é /users/{id} cai no comportamento de recordingTransport.
+type discordSessionTransport struct {
+	rt       *recordingTransport
+	username string
+}
+
+func (t *discordSessionTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Path, "/users/") {
+		body := fmt.Sprintf(`{"id":%q,"username":%q}`, strings.TrimPrefix(req.URL.Path[strings.LastIndex(req.URL.Path, "/"):], "/"), t.username)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	}
+	return t.rt.RoundTrip(req)
+}
+
+// TestHandleSearchDiscordOptionGetsOwnDeadline é a fiação do orçamento por
+// opção, não a aritmética isolada de context.WithTimeout: prova que quando
+// global-search consome o timeout inteiro (fallback lento de verdade, aqui
+// simulado por um handler que bloqueia até o ctx do cliente expirar),
+// discord-user — combinável com a primeira, ambas Required: false — ainda
+// consegue rodar com o PRÓPRIO orçamento em vez de herdar um ctx já estourado.
+// Mutação que reproduz o defeito de commands.go antes desta mudança: voltar a
+// compartilhar um único `ctx, cancel := context.WithTimeout(...)` entre os dois
+// blocos faz este teste falhar, porque o handler de discordAccount nunca
+// recebe a requisição a tempo e o log de sucesso não aparece.
+func TestHandleSearchDiscordOptionGetsOwnDeadline(t *testing.T) {
+	b, logs := newTestBotWithLogs()
+	b.timeout = 200 * time.Millisecond
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "discordAccount") {
+			fmt.Fprint(w, `{"data":[{"player_id":1,"name":"X","is_banned":2}]}`)
+			return
+		}
+		// Simula o caminho lento de global-search (fallback de scraping no
+		// nome): a requisição só termina quando o ctx do cliente expira, o que
+		// garante que o orçamento inteiro de b.timeout foi consumido por ela.
+		<-r.Context().Done()
+	}))
+	defer api.Close()
+
+	client, err := bf4db.New(strings.Repeat("a", 64), bf4db.WithBaseURL(api.URL+"/api"))
+	if err != nil {
+		t.Fatalf("bf4db.New: %v", err)
+	}
+	b.client = client
+
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	rt := &recordingTransport{}
+	s.Client = &http.Client{Transport: &discordSessionTransport{rt: rt, username: "fulano"}}
+
+	b.handleSearch(s, searchInteraction(
+		stringOption(optionSearch, "988768601"),
+		userOption(optionDiscord, "987654321"),
+	))
+
+	logged := logs.String()
+	if !strings.Contains(logged, `"msg":"discord search done"`) {
+		t.Fatalf("log não contém \"discord search done\" — discord-user herdou o ctx já gasto pela primeira busca\nlogs:\n%s", logged)
+	}
+	if strings.Contains(logged, `"msg":"discord search failed"`) {
+		t.Fatalf("log contém \"discord search failed\" — discord-user deveria ter seu próprio orçamento\nlogs:\n%s", logged)
 	}
 }

@@ -99,16 +99,20 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
-	defer cancel()
-
 	var (
 		embeds     []*discordgo.MessageEmbed
 		components []discordgo.MessageComponent
 		now        = time.Now()
 	)
 
+	// global-search e discord-user são combináveis (ambas Required: false), mas
+	// tinham um único deadline compartilhado: quando a primeira consumia o
+	// orçamento inteiro (ex. fallback de scraping no nome), a segunda rodava com
+	// o ctx já expirado e nunca chegava a emitir a requisição. Cada busca ganha
+	// o próprio timeout, mantendo a execução sequencial.
 	if opt, ok := options[optionSearch]; ok {
+		ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
+
 		query := strings.TrimSpace(opt.StringValue())
 		title := fmt.Sprintf("Busca: %s", sanitize(query))
 		if isIP(query) {
@@ -126,9 +130,12 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 			embeds = append(embeds, embed)
 			components = append(components, comps...)
 		}
+		cancel()
 	}
 
 	if opt, ok := options[optionDiscord]; ok {
+		ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
+
 		user := opt.UserValue(s)
 		title := fmt.Sprintf("Contas de %s", sanitize(user.Username))
 
@@ -140,6 +147,7 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 			b.log.Info("discord search done", "user_id", user.ID, "results", len(players))
 			embeds = append(embeds, resultEmbed(title, players, now))
 		}
+		cancel()
 	}
 
 	b.edit(s, i, embeds, components)
