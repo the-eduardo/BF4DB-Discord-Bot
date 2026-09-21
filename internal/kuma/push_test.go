@@ -351,6 +351,41 @@ func TestProlongedDisconnectIsLogged(t *testing.T) {
 	}
 }
 
+// O pior incidente do bot (26h45 offline, 15-16/09/2026) nao produziu uma
+// unica linha ERROR: as 161 linhas "gateway offline" sairam todas WARN. Uma
+// queda que passa de offlineErrorAfter ticks precisa escalar de nivel, senao
+// um grep/alerta por ERROR fica cego exatamente no pior caso.
+func TestProlongedOfflineEscalatesToError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	log, logs := testLoggerWithBuffer()
+	p := NewPusher(srv.URL, log)
+
+	alive := func() (bool, time.Duration) { return false, 0 }
+	for i := 0; i < 10; i++ {
+		p.pushIfAlive(context.Background(), alive)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, `"ticks":10`) || !strings.Contains(out, `"level":"ERROR"`) {
+		t.Fatalf("esperava um registro ERROR com ticks=10, veio: %s", out)
+	}
+	// Controle negativo: o registro do tick 3 (offlineWarnAfter) tem que
+	// continuar WARN -- senao a mudanca escalou blip junto com queda longa.
+	warnLine := ""
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.Contains(line, `"ticks":3`) {
+			warnLine = line
+		}
+	}
+	if warnLine == "" || !strings.Contains(warnLine, `"level":"WARN"`) {
+		t.Fatalf("esperava o registro de ticks=3 em WARN, veio: %q (log completo: %s)", warnLine, out)
+	}
+}
+
 // O requisito que protege as ~20 desconexoes/dia observadas em producao de
 // virarem ruido: um blip de 1-2 ticks (resume em segundos) nao pode gerar
 // nenhuma linha nova de log, nem na queda nem na volta.
