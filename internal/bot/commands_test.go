@@ -156,6 +156,103 @@ func TestLookupFallsBackToWebsiteOnCloudflare5xx(t *testing.T) {
 	}
 }
 
+// TestCachedLookupReturnsPartialResultsWithoutCaching prova o caminho que
+// chama searchPaged (client.go): quando a página 2 de uma busca por IP falha
+// no meio, a página 1 já paga não pode ser jogada fora, e o parcial não pode
+// grudar 5min no cache (a próxima busca tem que tentar de novo, não repetir a
+// mesma metade).
+func TestCachedLookupReturnsPartialResultsWithoutCaching(t *testing.T) {
+	b := newTestBot()
+
+	var page2Calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			page2Calls++
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, `{"data":[
+			{"id":1,"name":"p1","is_banned":2},
+			{"id":2,"name":"p2","is_banned":2},
+			{"id":3,"name":"p3","is_banned":2},
+			{"id":4,"name":"p4","is_banned":2},
+			{"id":5,"name":"p5","is_banned":2}
+		],"meta":{"last_page":3}}`)
+	}))
+	defer srv.Close()
+
+	client, err := bf4db.New(strings.Repeat("a", 64), bf4db.WithBaseURL(srv.URL+"/api"), bf4db.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("bf4db.New: %v", err)
+	}
+	b.client = client
+
+	players, err := b.cachedLookup(context.Background(), "1.2.3.4")
+	if len(players) != 5 {
+		t.Fatalf("cachedLookup players = %d, want 5 (a página 1 não pode se perder)", len(players))
+	}
+	if err == nil {
+		t.Fatal("cachedLookup err = nil, want o erro da página 2 propagado")
+	}
+
+	// Segunda chamada: se o parcial tivesse sido cacheado, a página 2 não
+	// seria pedida de novo.
+	if _, _ = b.cachedLookup(context.Background(), "1.2.3.4"); page2Calls != 2 {
+		t.Errorf("página 2 foi chamada %d vezes, want 2 (o parcial não pode ser servido do cache)", page2Calls)
+	}
+}
+
+// TestHandleSearchShowsPartialResultsInsteadOfError e' a fiacao ate' o handler
+// de verdade: uma busca por IP que falha na pagina 2 tem que chegar ao Discord
+// com os 5 jogadores da pagina 1 e o aviso "(parcial)" no titulo, nao com o
+// embed de erro generico que descartava tudo antes desta mudanca.
+func TestHandleSearchShowsPartialResultsInsteadOfError(t *testing.T) {
+	b := newTestBot()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, `{"data":[
+			{"id":1,"name":"p1","is_banned":2},
+			{"id":2,"name":"p2","is_banned":2},
+			{"id":3,"name":"p3","is_banned":2},
+			{"id":4,"name":"p4","is_banned":2},
+			{"id":5,"name":"p5","is_banned":2}
+		],"meta":{"last_page":3}}`)
+	}))
+	defer srv.Close()
+
+	client, err := bf4db.New(strings.Repeat("a", 64), bf4db.WithBaseURL(srv.URL+"/api"), bf4db.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("bf4db.New: %v", err)
+	}
+	b.client = client
+
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	rt := &recordingTransport{}
+	s.Client = &http.Client{Transport: rt}
+
+	i := searchInteraction(stringOption(optionSearch, "1.2.3.4"))
+	i.Member.Permissions = discordgo.PermissionAdministrator // maySearchIP exige staff
+
+	b.handleSearch(s, i)
+
+	if len(rt.bodies) != 2 {
+		t.Fatalf("handleSearch mandou %d respostas, want 2 (defer + edit)", len(rt.bodies))
+	}
+	body := string(rt.bodies[len(rt.bodies)-1])
+	for _, want := range []string{"p1", "p2", "p3", "p4", "p5", "parcial"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("corpo do edit não contém %q: %s", want, body)
+		}
+	}
+}
+
 // TestPaginatedTitleCapped é a fiação do teto de título, não a função pura:
 // resultEmbed() já tem o próprio teste em render_test.go, mas o caminho real
 // que handleSearch chama é b.paginated (commands.go:166), e um corte
