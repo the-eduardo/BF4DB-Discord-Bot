@@ -56,6 +56,43 @@ func TestLivenessUsesTheClampedHeartbeat(t *testing.T) {
 	}
 }
 
+// TestLivenessRejectsStaleHeartbeatAck prova o gate novo: b.connected mentindo
+// "conectado" enquanto o gateway parou de ackar heartbeats (o zumbi do
+// incidente de 15-16/09/2026, sem Disconnect nunca disparado) tem de reprovar.
+func TestLivenessRejectsStaleHeartbeatAck(t *testing.T) {
+	b := newTestBot()
+	now := time.Now().UTC()
+	b.connected.Store(true)
+	b.session = &discordgo.Session{LastHeartbeatSent: now, LastHeartbeatAck: now.Add(-10 * time.Minute)}
+
+	if ok, _ := b.liveness(); ok {
+		t.Fatal("liveness() = true com ack de 10min, want false (gateway zumbi)")
+	}
+}
+
+// Controles positivos: sem eles um liveness() que sempre devolvesse false
+// passaria pelo teste acima.
+func TestLivenessAcceptsFreshOrUnmeasuredAck(t *testing.T) {
+	b := newTestBot()
+	now := time.Now().UTC()
+	b.connected.Store(true)
+
+	// Ack fresco: a latencia clampada tem que atravessar intacta.
+	b.session = &discordgo.Session{LastHeartbeatSent: now.Add(-150 * time.Millisecond), LastHeartbeatAck: now}
+	if ok, lat := b.liveness(); !ok || lat != 150*time.Millisecond {
+		t.Fatalf("liveness() = (%v, %v), want (true, 150ms)", ok, lat)
+	}
+
+	// Sessao recem-construida (valor zero de LastHeartbeatAck, como um teste
+	// que nao passou por discordgo.New) nao pode ser lida como morta -- em
+	// producao isso nunca e zero (discordgo.New semeia LastHeartbeatAck=now),
+	// mas o gate nao pode presumir isso.
+	b.session = &discordgo.Session{}
+	if ok, _ := b.liveness(); !ok {
+		t.Fatal("liveness() = false com LastHeartbeatAck zero, want true (sem medicao ainda != morto)")
+	}
+}
+
 // pingCapturingTransport records the body of every PATCH
 // (InteractionResponseEdit hits the API with PATCH) and answers every request
 // with an empty, valid JSON body so discordgo's response decoding doesn't fail
