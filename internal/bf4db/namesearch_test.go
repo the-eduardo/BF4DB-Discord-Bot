@@ -203,6 +203,37 @@ func TestSearchNameKeepsStubWhenHydrationFails(t *testing.T) {
 	}
 }
 
+// TestSearchNameKeepsScrapedBanWhenAPIOmitsIt guards against hydrate() erasing
+// a ban the scrape already found. The API here succeeds (unlike the test
+// above) but leaves out "is_banned" entirely, which FlexInt decodes as 0 —
+// the same value as BanUnderReview — so a naive hydrate would downgrade a
+// banned stub to "under review" and drop the reason.
+func TestSearchNameKeepsScrapedBanWhenAPIOmitsIt(t *testing.T) {
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/player/")
+		_, _ = fmt.Fprintf(w, `{"data":{"player_id":%s,"name":"hydrated"}}`, id)
+	})
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, searchPageFixture)
+	})
+
+	c := newNameSearchClient(t, api, web, WithMaxRetries(0))
+	players, err := c.SearchName(context.Background(), "eduardo")
+	if err != nil {
+		t.Fatalf("SearchName: %v", err)
+	}
+	if len(players) != 3 {
+		t.Fatalf("got %d players, want 3", len(players))
+	}
+	if !players[1].Banned() || players[1].Reason() != "Aimbot" {
+		t.Errorf("scraped ban lost after hydration omitted is_banned: %+v", players[1])
+	}
+}
+
 func TestSearchNameRespectsLimit(t *testing.T) {
 	var hydrations atomic.Int32
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

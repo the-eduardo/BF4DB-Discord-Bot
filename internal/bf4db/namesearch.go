@@ -177,6 +177,17 @@ func (c *Client) hydrate(ctx context.Context, stubs []Player) []Player {
 				if full.Name == "" {
 					full.Name = players[i].Name
 				}
+				// The stub carries the verdict the site already showed (badge +
+				// tooltip). The API serializes is_banned as null/absent for part
+				// of the records, and FlexInt decodes that as 0 — which is not
+				// "no data", it is BanUnderReview. Without this, a banned row
+				// from the scrape turns into "under review" and loses its reason.
+				if full.IsBanned == BanUnderReview && players[i].IsBanned == BanActive {
+					full.IsBanned = players[i].IsBanned
+					if strings.TrimSpace(full.BanReason) == "" {
+						full.BanReason = players[i].BanReason
+					}
+				}
 				players[i] = full
 			}
 		}()
