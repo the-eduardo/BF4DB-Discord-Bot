@@ -41,9 +41,12 @@ const searchPageFixture = `<html><body><table><tbody>
 </tbody></table></body></html>`
 
 func TestParseWebSearch(t *testing.T) {
-	players := parseWebSearch(searchPageFixture)
+	players, misses := parseWebSearch(searchPageFixture)
 	if len(players) != 3 {
 		t.Fatalf("got %d players, want 3 (rows deduped, junk row skipped)", len(players))
+	}
+	if misses != 0 {
+		t.Errorf("misses = %d, want 0 (the fixture's ban badge has a parseable tooltip)", misses)
 	}
 	if players[0].PersonaID() != 172015112 || players[0].Name != "eduardo" {
 		t.Errorf("first row = %+v", players[0])
@@ -57,8 +60,70 @@ func TestParseWebSearch(t *testing.T) {
 	if players[2].Name != "Eduardo & Co" {
 		t.Errorf("HTML entity not decoded: %q", players[2].Name)
 	}
-	if got := parseWebSearch("<html><body>nothing here</body></html>"); got != nil {
-		t.Errorf("empty page = %+v, want nil", got)
+	if got, misses := parseWebSearch("<html><body>nothing here</body></html>"); got != nil || misses != 0 {
+		t.Errorf("empty page = %+v, misses=%d, want nil, 0", got, misses)
+	}
+}
+
+// TestParseWebSearchCountsMissesWhenTooltipAttributeIsRenamed pins the drift
+// case the split regex exists for: a ban badge (webBanRe) whose reason
+// tooltip uses an attribute name neither regex knows (simulating a front-end
+// library rename that is neither the original data-original-title nor the
+// data-bs-original-title this fix already tolerates). The verdict must
+// survive; only the reason is allowed to be lost, and that loss must be
+// counted so callers can log it.
+func TestParseWebSearchCountsMissesWhenTooltipAttributeIsRenamed(t *testing.T) {
+	page := `<html><body><table><tbody>
+<tr>
+  <td class="player-td-image"><a href="/player/1053283869"><img alt="eduardo-chopao"></a></td>
+  <td class="player-td-name"><a href="/player/1053283869"> eduardo-chopao </a></td>
+  <td class="pull-right">
+    <a href="https://bf4db.com/player/ban/1053283869" data-toggle="tooltip"
+       data-xx-title="Aimbot" class="nk-btn">Banned</a>
+  </td>
+</tr>
+</tbody></table></body></html>`
+
+	players, misses := parseWebSearch(page)
+	if len(players) != 1 {
+		t.Fatalf("got %d players, want 1", len(players))
+	}
+	if !players[0].Banned() {
+		t.Error("row with a ban badge must stay banned even when the reason tooltip can't be parsed")
+	}
+	if players[0].Reason() != "Banned" {
+		t.Errorf("reason = %q, want the Reason() fallback for an empty BanReason", players[0].Reason())
+	}
+	if misses != 1 {
+		t.Errorf("misses = %d, want 1", misses)
+	}
+}
+
+// TestParseWebSearchAcceptsRenamedBootstrapTooltipAttribute pins the specific
+// rename this fix tolerates for free: Bootstrap 3 -> 5 renames
+// data-original-title to data-bs-original-title. This must NOT count as a
+// miss — the reason should still come through.
+func TestParseWebSearchAcceptsRenamedBootstrapTooltipAttribute(t *testing.T) {
+	page := `<html><body><table><tbody>
+<tr>
+  <td class="player-td-image"><a href="/player/1053283869"><img alt="eduardo-chopao"></a></td>
+  <td class="player-td-name"><a href="/player/1053283869"> eduardo-chopao </a></td>
+  <td class="pull-right">
+    <a href="https://bf4db.com/player/ban/1053283869" data-toggle="tooltip"
+       data-bs-original-title="Aimbot" class="nk-btn">Banned</a>
+  </td>
+</tr>
+</tbody></table></body></html>`
+
+	players, misses := parseWebSearch(page)
+	if len(players) != 1 {
+		t.Fatalf("got %d players, want 1", len(players))
+	}
+	if !players[0].Banned() || players[0].Reason() != "Aimbot" {
+		t.Errorf("player = %+v, want banned with reason Aimbot", players[0])
+	}
+	if misses != 0 {
+		t.Errorf("misses = %d, want 0", misses)
 	}
 }
 
@@ -361,6 +426,51 @@ func TestSearchNameWebDoesNotLogWhenScrapeFindsRows(t *testing.T) {
 	}
 }
 
+// TestSearchNameWebWarnsOnUnparseableReasonTooltip is the by-name-search
+// counterpart of the SuggestNames wiring test above: even though this path
+// self-heals the VERDICT through hydrate() (models.go's BanUnderReview
+// override), the reason tooltip has no such recovery, so the miss must still
+// be logged here too.
+func TestSearchNameWebWarnsOnUnparseableReasonTooltip(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	page := `<html><body><table><tbody>
+<tr>
+  <td class="player-td-image"><a href="/player/1053283869"><img alt="eduardo-chopao"></a></td>
+  <td class="player-td-name"><a href="/player/1053283869"> eduardo-chopao </a></td>
+  <td class="pull-right">
+    <a href="https://bf4db.com/player/ban/1053283869" data-toggle="tooltip"
+       data-xx-title="Aimbot" class="nk-btn">Banned</a>
+  </td>
+</tr>
+</tbody></table></body></html>`
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/player/")
+		_, _ = fmt.Fprintf(w, `{"data":{"player_id":%s,"name":"p","is_banned":2}}`, id)
+	})
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, page)
+	})
+
+	c := newNameSearchClient(t, api, web, WithLogger(log))
+	if _, err := c.SearchName(context.Background(), "eduardo"); err != nil {
+		t.Fatalf("SearchName: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "bf4db ban badge parsed without a reason tooltip") {
+		t.Fatalf("expected a WARN log for the unparseable tooltip, got: %q", out)
+	}
+	if !strings.Contains(out, "misses=1") {
+		t.Errorf("log line missing misses field: %q", out)
+	}
+}
+
 // suggestClient wires only the website stub, since SuggestNames never touches
 // the API route.
 func suggestClient(t *testing.T, web http.Handler, opts ...Option) *Client {
@@ -474,6 +584,49 @@ func TestSuggestNamesKeepsWarningWhileTheStreakContinues(t *testing.T) {
 	}
 	if c.suggestMisses.Load() != int64(2*suggestZeroRowStreak) {
 		t.Errorf("suggestMisses = %d, want %d", c.suggestMisses.Load(), 2*suggestZeroRowStreak)
+	}
+}
+
+// TestSuggestNamesKeepsVerdictAndWarnsWhenTooltipAttributeIsRenamed is the
+// fiação test for SuggestNames: unlike the by-name search path, this one
+// never hydrates through the API, so parseWebSearch's split regex is the
+// ONLY thing standing between a renamed tooltip attribute and a banned
+// player silently showing up as clean in autocomplete. This proves the
+// caller (not just parseWebSearch in isolation) still reports Banned() and
+// logs the drift.
+func TestSuggestNamesKeepsVerdictAndWarnsWhenTooltipAttributeIsRenamed(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	page := `<html><body><table><tbody>
+<tr>
+  <td class="player-td-image"><a href="/player/1053283869"><img alt="eduardo-chopao"></a></td>
+  <td class="player-td-name"><a href="/player/1053283869"> eduardo-chopao </a></td>
+  <td class="pull-right">
+    <a href="https://bf4db.com/player/ban/1053283869" data-toggle="tooltip"
+       data-xx-title="Aimbot" class="nk-btn">Banned</a>
+  </td>
+</tr>
+</tbody></table></body></html>`
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, page)
+	})
+	c := suggestClient(t, web, WithLogger(log))
+
+	got, err := c.SuggestNames(context.Background(), "eduardo", 0)
+	if err != nil {
+		t.Fatalf("SuggestNames: %v", err)
+	}
+	if len(got) != 1 || !got[0].Banned() {
+		t.Fatalf("got %+v, want one banned player (verdict must survive a renamed tooltip attribute)", got)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "bf4db ban badge parsed without a reason tooltip") {
+		t.Fatalf("expected a WARN log for the unparseable tooltip, got: %q", out)
+	}
+	if !strings.Contains(out, "misses=1") {
+		t.Errorf("log line missing misses field: %q", out)
 	}
 }
 

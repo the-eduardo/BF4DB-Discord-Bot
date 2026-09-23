@@ -41,8 +41,14 @@ var (
 	// Each result row carries the persona id and the display name.
 	webRowRe  = regexp.MustCompile(`(?s)<tr.*?</tr>`)
 	webNameRe = regexp.MustCompile(`(?s)<td class="player-td-name">.*?<a href="/player/(\d+)"\s*>\s*(.*?)\s*</a>`)
-	// Banned rows carry a badge whose tooltip holds the ban reason.
-	webBanRe = regexp.MustCompile(`(?s)/player/ban/\d+.*?data-original-title="([^"]*)"`)
+	// The ban verdict depends only on the badge's URL path, which is far more
+	// stable than a front-end library's attribute name. The reason is a
+	// separate, best-effort match: if the tooltip attribute ever gets
+	// renamed (e.g. a Bootstrap 3 -> 5 upgrade renaming data-original-title
+	// to data-bs-original-title), a banned row still gets flagged banned, it
+	// just loses the reason text instead of losing the verdict entirely.
+	webBanRe      = regexp.MustCompile(`/player/ban/\d+`)
+	webBanTitleRe = regexp.MustCompile(`(?s)/player/ban/\d+.*?data-(?:bs-)?original-title="([^"]*)"`)
 )
 
 // searchNameWeb resolves a player name through the website's search page.
@@ -63,7 +69,7 @@ func (c *Client) searchNameWeb(ctx context.Context, name string, limit int) ([]P
 		return nil, fmt.Errorf("bf4db: name search through %s: %w", c.webBaseURL.Host, err)
 	}
 
-	hits := parseWebSearch(string(body))
+	hits, misses := parseWebSearch(string(body))
 	if len(hits) == 0 {
 		// No status/format check above this: a 200 with a changed page layout
 		// looks identical to a genuine "no matches" response. This is the only
@@ -71,6 +77,13 @@ func (c *Client) searchNameWeb(ctx context.Context, name string, limit int) ([]P
 		// either way.
 		c.log.Error("bf4db web search returned zero rows", "name_len", utf8.RuneCountInString(name), "body_len", len(body))
 		return nil, nil
+	}
+	if misses > 0 {
+		// A ban badge without a parseable reason tooltip is not a legitimate
+		// page state — it means the tooltip attribute drifted (or something
+		// new appeared inside the badge cell) and reasons are being lost even
+		// though verdicts are not.
+		c.log.Warn("bf4db ban badge parsed without a reason tooltip", "rows", len(hits), "misses", misses)
 	}
 	if len(hits) > limit {
 		c.notify("Showing %d of %d matches (raise -limit for more)", limit, len(hits))
@@ -102,7 +115,7 @@ func (c *Client) SuggestNames(ctx context.Context, name string, limit int) ([]Pl
 		return nil, fmt.Errorf("bf4db: suggesting names through %s: %w", c.webBaseURL.Host, err)
 	}
 
-	hits := parseWebSearch(string(body))
+	hits, misses := parseWebSearch(string(body))
 	if len(hits) == 0 {
 		// Zero rows on one suggestion is normal: a prefix with no real match
 		// returns exactly that. Zero rows many times in a row is not — this is
@@ -115,6 +128,14 @@ func (c *Client) SuggestNames(ctx context.Context, name string, limit int) ([]Pl
 	} else {
 		c.suggestMisses.Store(0)
 	}
+	if misses > 0 {
+		// SuggestNames never hydrates through the API (that is the whole
+		// point — it must answer inside Discord's 3s autocomplete window), so
+		// this is the only place a tooltip-attribute drift would otherwise go
+		// unnoticed on the autocomplete path: the verdict still reaches the
+		// user, the reason silently doesn't.
+		c.log.Warn("bf4db ban badge parsed without a reason tooltip", "rows", len(hits), "misses", misses)
+	}
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
@@ -122,11 +143,11 @@ func (c *Client) SuggestNames(ctx context.Context, name string, limit int) ([]Pl
 }
 
 // parseWebSearch extracts the result rows of the website's search page.
-func parseWebSearch(page string) []Player {
-	var (
-		players []Player
-		seen    = map[int]bool{}
-	)
+// misses counts rows with a ban badge whose reason tooltip did not match —
+// verdict preserved, reason lost — which is a layout-drift signal on its own
+// (badge present + tooltip absent is not a legitimate page state).
+func parseWebSearch(page string) (players []Player, misses int) {
+	seen := map[int]bool{}
 	for _, row := range webRowRe.FindAllString(page, -1) {
 		match := webNameRe.FindStringSubmatch(row)
 		if match == nil {
@@ -143,13 +164,17 @@ func parseWebSearch(page string) []Player {
 			Name:     strings.TrimSpace(html.UnescapeString(match[2])),
 			IsBanned: BanNotReported,
 		}
-		if ban := webBanRe.FindStringSubmatch(row); ban != nil {
+		if webBanRe.MatchString(row) {
 			player.IsBanned = BanActive
-			player.BanReason = strings.TrimSpace(html.UnescapeString(ban[1]))
+			if title := webBanTitleRe.FindStringSubmatch(row); title != nil {
+				player.BanReason = strings.TrimSpace(html.UnescapeString(title[1]))
+			} else {
+				misses++
+			}
 		}
 		players = append(players, player)
 	}
-	return players
+	return players, misses
 }
 
 // hydrate replaces each scraped stub with the full API record, keeping the
