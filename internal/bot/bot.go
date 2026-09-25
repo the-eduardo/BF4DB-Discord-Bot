@@ -211,12 +211,41 @@ func (b *Bot) watchGateway(ctx context.Context, stuck chan<- struct{}) {
 	}
 }
 
-// liveness reports whether the gateway is connected, plus its latency.
+// ackStale fica ACIMA do proprio gatilho de reconexao do discordgo
+// (FailedHeartbeatAcks=5 * ~41.25s do intervalo default = ~3m26s, wsapi.go),
+// entao num bot saudavel a lib se cura sozinha primeiro e este gate so dispara
+// quando ela NAO agiu — exatamente o zumbi do incidente de 15-16/09/2026, em
+// que dois "bad handshake" e silencio total nunca dispararam outro reconnect.
+const ackStale = 5 * time.Minute
+
+// liveness reports whether the gateway is connected, plus its latency. A
+// b.connected true por si so nao basta: essa flag so muda em Ready/Resumed/
+// Disconnect (bot.go acima), e se o gateway travar sem gerar nenhum desses
+// eventos — o modo de falha observado no incidente — liveness ficaria mudo
+// sobre um processo vivo que nao responde mais nada.
 func (b *Bot) liveness() (bool, time.Duration) {
 	if !b.connected.Load() {
 		return false, 0
 	}
+	if age, ok := b.ackAge(); ok && age > ackStale {
+		b.log.Warn("gateway conectado mas sem ack de heartbeat", "ack_age", age.Round(time.Second))
+		return false, 0
+	}
 	return true, b.heartbeat()
+}
+
+// ackAge le o Ack sob o RWMutex da propria sessao — exatamente como o loop de
+// heartbeat do discordgo le o mesmo campo (wsapi.go). ok=false no valor zero,
+// para uma sessao construida como zero-value (ex. em teste) nunca ser lida
+// como morta; em producao discordgo.New ja semeia LastHeartbeatAck=now.
+func (b *Bot) ackAge() (time.Duration, bool) {
+	b.session.RLock()
+	last := b.session.LastHeartbeatAck
+	b.session.RUnlock()
+	if last.IsZero() {
+		return 0, false
+	}
+	return time.Since(last), true
 }
 
 // heartbeat reports the last heartbeat latency, never negative: discordgo
