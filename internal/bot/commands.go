@@ -245,6 +245,8 @@ func errorEmbed(title string, err error) *discordgo.MessageEmbed {
 		description = "A consulta ao BF4DB demorou demais e foi cancelada."
 	case errors.Is(err, bf4db.ErrNameSearchUnavailable):
 		description = "A busca por nome do BF4DB está fora do ar no momento. Tente por IP ou pelo id do jogador."
+	case errors.Is(err, bf4db.ErrPlayerNotFound):
+		description = "Nenhum jogador com esse id no BF4DB."
 	case errors.As(err, &apiErr) && apiErr.Unauthorized():
 		description = "O BF4DB recusou a chave da API do bot. Avise o administrador."
 	case errors.As(err, &apiErr) && apiErr.NotFound():
