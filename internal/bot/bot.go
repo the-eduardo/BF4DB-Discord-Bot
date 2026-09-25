@@ -3,6 +3,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -17,6 +18,26 @@ import (
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/kuma"
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
 )
+
+// offlineFatalAfter*watchdogInterval is how long the gateway can stay
+// disconnected before the process gives up and exits, letting
+// `restart: unless-stopped` bring up a fresh one. discordgo's own reconnect
+// can get stuck after a failed handshake and never try again (upstream
+// bwmarrin/discordgo#899, no fix as of v0.29.0, the latest release) — measured
+// in production on 2026-09-15: two "bad handshake" attempts one second apart,
+// then total silence for 26h45, with the container reporting healthy the
+// whole time because the compose healthcheck only checks the TCP connection,
+// not the gateway session. Ten minutes leaves ample margin over any real
+// reconnect blip: the container's entire log history (since 2026-09-13) has
+// zero occurrences of a disconnect lasting more than a couple of ticks.
+const (
+	offlineFatalAfter = 10
+	watchdogInterval  = 60 * time.Second
+)
+
+// ErrGatewayStuck is returned by Run when the watchdog gives up on a gateway
+// that has been offline for longer than offlineFatalAfter*watchdogInterval.
+var ErrGatewayStuck = errors.New("gateway offline beyond recovery window")
 
 // maxMessageChars is Discord's per-MESSAGE embed budget, not per-embed: the API
 // sums title+description+field.name+field.value+footer.text+author.name across
@@ -49,6 +70,10 @@ type Bot struct {
 	pusher    *kuma.Pusher
 	connected atomic.Bool
 
+	// watchdogInterval only exists so tests can run the watchdog loop fast;
+	// production always gets watchdogInterval (set in New).
+	watchdogInterval time.Duration
+
 	lookups     *cache.Cache[[]bf4db.Player]
 	suggestions *cache.Cache[[]*discordgo.ApplicationCommandOptionChoice]
 	results     *cache.Cache[resultSet]
@@ -64,16 +89,17 @@ func New(cfg config.Config, client *bf4db.Client, log *slog.Logger) (*Bot, error
 	session.Identify.Intents = discordgo.IntentsNone
 
 	b := &Bot{
-		session:     session,
-		client:      client,
-		log:         log,
-		guildID:     cfg.GuildID,
-		timeout:     cfg.Timeout,
-		ipRoleIDs:   cfg.IPRoleIDs,
-		pusher:      kuma.NewPusher(cfg.KumaPushURL, log),
-		lookups:     cache.New[[]bf4db.Player](lookupTTL, lookupMax),
-		suggestions: cache.New[[]*discordgo.ApplicationCommandOptionChoice](suggestionTTL, suggestionMax),
-		results:     cache.New[resultSet](resultTTL, resultMax),
+		session:          session,
+		client:           client,
+		log:              log,
+		guildID:          cfg.GuildID,
+		timeout:          cfg.Timeout,
+		ipRoleIDs:        cfg.IPRoleIDs,
+		pusher:           kuma.NewPusher(cfg.KumaPushURL, log),
+		watchdogInterval: watchdogInterval,
+		lookups:          cache.New[[]bf4db.Player](lookupTTL, lookupMax),
+		suggestions:      cache.New[[]*discordgo.ApplicationCommandOptionChoice](suggestionTTL, suggestionMax),
+		results:          cache.New[resultSet](resultTTL, resultMax),
 	}
 
 	session.AddHandler(b.route)
@@ -135,13 +161,54 @@ func (b *Bot) Run(ctx context.Context, removeCommands bool) error {
 
 	go b.pusher.Run(ctx, b.liveness)
 
-	<-ctx.Done()
-	b.log.Info("shutting down")
+	stuck := make(chan struct{})
+	go b.watchGateway(ctx, stuck)
 
-	if removeCommands {
-		b.removeCommands(registered)
+	return b.wait(ctx, stuck, removeCommands, registered)
+}
+
+// wait blocks until ctx is cancelled (normal shutdown) or the watchdog decides
+// the gateway is stuck (stuck closed). Split out of Run so it's testable
+// without a real discordgo session: everything above this point needs
+// session.Open() to have succeeded first.
+func (b *Bot) wait(ctx context.Context, stuck <-chan struct{}, removeCommands bool, registered []*discordgo.ApplicationCommand) error {
+	select {
+	case <-ctx.Done():
+		b.log.Info("shutting down")
+		if removeCommands {
+			b.removeCommands(registered)
+		}
+		return nil
+	case <-stuck:
+		b.log.Error("gateway stuck offline", "for", offlineFatalAfter*b.watchdogInterval)
+		return ErrGatewayStuck
 	}
-	return nil
+}
+
+// watchGateway closes stuck once the gateway has been continuously
+// disconnected for offlineFatalAfter consecutive ticks. It exits on ctx.Done()
+// without ever closing stuck, same as any other clean shutdown.
+func (b *Bot) watchGateway(ctx context.Context, stuck chan<- struct{}) {
+	ticker := time.NewTicker(b.watchdogInterval)
+	defer ticker.Stop()
+
+	offlineTicks := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if ok, _ := b.liveness(); ok {
+				offlineTicks = 0
+				continue
+			}
+			offlineTicks++
+			if offlineTicks >= offlineFatalAfter {
+				close(stuck)
+				return
+			}
+		}
+	}
 }
 
 // liveness reports whether the gateway is connected, plus its latency.
