@@ -260,6 +260,39 @@ func TestSuggestStripsInvisibleFromBanReason(t *testing.T) {
 	}
 }
 
+// suggestPageBanReasonAttributeRenamed mimics a scraped banned row whose
+// tooltip attribute has drifted from data-original-title to something the
+// scraper's regex doesn't recognize (namesearch.go's webBanTitleRe) — the
+// realistic case being a front-end library upgrade that renames the
+// attribute. The ban badge itself (webBanRe) still matches on the URL path
+// alone, so the verdict must survive even though the reason is lost.
+const suggestPageBanReasonAttributeRenamed = `<table><tbody>
+<tr><td class="player-td-image"><a href="/player/333"><img></a></td>
+    <td class="player-td-name"><a href="/player/333">eduardo</a></td>
+    <td class="pull-right"><a href="https://bf4db.com/player/ban/333" data-xx-title="Aimbot">Banned</a></td></tr>
+</tbody></table>`
+
+// TestSuggestKeepsBanBadgeWhenTooltipAttributeIsRenamed exercises the full
+// chain (scraper -> suggest -> choiceLabel) for the drift case a renamed
+// tooltip attribute causes: without the split regex in namesearch.go, this
+// row would silently fall back to BanNotReported and the autocomplete
+// suggestion would show up as a clean name, with nothing in the logs (rows
+// still come back, so neither zero-row detector fires).
+func TestSuggestKeepsBanBadgeWhenTooltipAttributeIsRenamed(t *testing.T) {
+	b := newTestBot()
+	withWebStub(t, b, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, suggestPageBanReasonAttributeRenamed)
+	})
+
+	got := b.suggest("eduardo")
+	if len(got) != 1 {
+		t.Fatalf("got %d choices, want 1", len(got))
+	}
+	if got[0].Name != "eduardo — banido" {
+		t.Errorf("label = %q, want the verdict preserved without a reason (choiceLabel falls back to no parenthetical for an empty BanReason)", got[0].Name)
+	}
+}
+
 // failingTransport makes every Discord REST call fail at the transport layer,
 // which is what an InteractionRespond rejection looks like from inside
 // handleAutocomplete.
