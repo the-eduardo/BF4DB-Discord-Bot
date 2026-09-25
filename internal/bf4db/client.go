@@ -40,6 +40,12 @@ var (
 	// API endpoint answers HTTP 500 for every name (verified 2026-07-26) and
 	// the website fallback failed or was disabled.
 	ErrNameSearchUnavailable = errors.New("bf4db: name search is unavailable (the API answers HTTP 500 for every name)")
+
+	// ErrPlayerNotFound reports a 200 response whose "data" carries no
+	// record at all (null or {}). The API does this instead of a 404 for
+	// some ids; without this check the caller would fabricate an identity
+	// around the requested id and render a player that does not exist.
+	ErrPlayerNotFound = errors.New("bf4db: player not found")
 )
 
 // APIError is a non-2xx response from BF4DB.
@@ -344,6 +350,12 @@ func (c *Client) player(ctx context.Context, personaID string, opts requestOptio
 		return Player{}, err
 	}
 	if parsed.Data.PersonaID() == 0 {
+		if parsed.Data == (Player{}) {
+			// A 200 with an empty/null "data" is not "no id", it is "no
+			// record" — stamping the requested id here would fabricate a
+			// player that the API never returned.
+			return Player{}, fmt.Errorf("%w: id %s", ErrPlayerNotFound, personaID)
+		}
 		parsed.Data.PlayerID = FlexInt(mustInt(personaID))
 	}
 	return parsed.Data, nil

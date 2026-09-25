@@ -223,6 +223,37 @@ func TestPlayerLookupParsesObjectPayload(t *testing.T) {
 	}
 }
 
+func TestPlayerLookupEmptyDataReportsNotFound(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"data":null}`)
+	}))
+
+	player, err := c.Player(context.Background(), "988768601")
+	if !errors.Is(err, ErrPlayerNotFound) {
+		t.Fatalf("err = %v, want ErrPlayerNotFound", err)
+	}
+	if player.PersonaID() != 0 {
+		t.Errorf("player = %+v, want zero value", player)
+	}
+}
+
+func TestPlayerLookupRecordWithoutIDStillGetsStamped(t *testing.T) {
+	// A record that carries other fields but omits both "id" and
+	// "player_id" is a real (if unusual) payload, not an empty one — the
+	// requested id must still be stamped onto it.
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"data":{"name":"X","is_banned":1}}`)
+	}))
+
+	player, err := c.Player(context.Background(), "988768601")
+	if err != nil {
+		t.Fatalf("Player: %v", err)
+	}
+	if player.PersonaID() != 988768601 || player.Name != "X" {
+		t.Errorf("unexpected player: %+v", player)
+	}
+}
+
 func TestSearchNameDoesNotRetryTheAPIOutage(t *testing.T) {
 	var calls atomic.Int32
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
