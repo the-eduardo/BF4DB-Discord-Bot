@@ -121,11 +121,21 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 		players, err := b.cachedLookup(ctx, query)
 		switch {
-		case err != nil:
+		case err != nil && len(players) == 0:
 			b.log.Error("search failed", "query_kind", queryKind(query), "err", redact.Err(err))
 			embeds = append(embeds, errorEmbed(title, err))
 		default:
-			b.log.Info("search done", "query_kind", queryKind(query), "results", len(players))
+			if err != nil {
+				// A busca falhou no meio da paginação, mas já tem gente do lado de
+				// cá: mostrar o que chegou em vez de jogar fora o que já foi pago
+				// em requisições. O sufixo no título é o que impede a leitura como
+				// resultado completo — ele sobrevive à paginação porque paginated
+				// guarda o título inteiro no resultSet.
+				b.log.Warn("search partial", "query_kind", queryKind(query), "results", len(players), "err", redact.Err(err))
+				title += " (parcial)"
+			} else {
+				b.log.Info("search done", "query_kind", queryKind(query), "results", len(players))
+			}
 			embed, comps := b.paginated(title, players, now, interactionUserID(i))
 			embeds = append(embeds, embed)
 			components = append(components, comps...)
@@ -211,6 +221,10 @@ func (b *Bot) maySearchIP(member *discordgo.Member) bool {
 
 // cachedLookup serves repeated questions from memory: the same suspect gets
 // checked by several people in a row, and the API allows 70 requests a minute.
+// A partial result from lookup (searchPaged already returns what it fetched
+// before failing) is propagated to the caller but never cached — the 5min TTL
+// would keep serving an incomplete page count long after the failure that
+// caused it.
 func (b *Bot) cachedLookup(ctx context.Context, query string) ([]bf4db.Player, error) {
 	key := queryKind(query) + ":" + strings.ToLower(query)
 	if players, ok := b.lookups.Get(key); ok {
@@ -220,7 +234,7 @@ func (b *Bot) cachedLookup(ctx context.Context, query string) ([]bf4db.Player, e
 
 	players, err := b.lookup(ctx, query)
 	if err != nil {
-		return nil, err
+		return players, err
 	}
 	b.lookups.Set(key, players)
 	return players, nil
