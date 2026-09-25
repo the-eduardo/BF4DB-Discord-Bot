@@ -54,7 +54,10 @@ func TestWatchdogFiresAfterSustainedOffline(t *testing.T) {
 // falhou (stuck fechou); com `offlineTicks = 0` restaurado, passou.
 func TestWatchdogIgnoresBlip(t *testing.T) {
 	b := newTestBot()
-	b.watchdogInterval = 20 * time.Millisecond
+	// 100ms (era 20ms): com 20ms a margem entre o AfterFunc e o tick era de
+	// 10ms e o teste falhava sem mutação nenhuma (7 de 30 execuções na
+	// drenagem de 25/09/2026) — jitter de timer, não defeito do watchdog.
+	b.watchdogInterval = 100 * time.Millisecond
 	// heartbeat() precisa de uma sessão não-nula assim que connected virar
 	// true: liveness() chama b.heartbeat() -> b.session.HeartbeatLatency().
 	b.session = &discordgo.Session{}
@@ -66,18 +69,18 @@ func TestWatchdogIgnoresBlip(t *testing.T) {
 
 	go b.watchGateway(ctx, stuck)
 
-	// offlineFatalAfter=10: 9 ticks offline (t=20..180ms) levam offlineTicks
-	// a 9. Reconecta em t=190ms (antes do tick 10, em t=200ms) — esse tick
-	// tem de zerar o contador. Cai de novo em t=210ms (antes do tick 11, em
-	// t=220ms): com o reset correto, esse é só o 1º tick offline do novo
+	// offlineFatalAfter=10: 9 ticks offline (t=100..900ms) levam offlineTicks
+	// a 9. Reconecta em t=950ms (antes do tick 10, em t=1000ms) — esse tick
+	// tem de zerar o contador. Cai de novo em t=1050ms (antes do tick 11, em
+	// t=1100ms): com o reset correto, esse é só o 1º tick offline do novo
 	// episódio; sem reset, seria o 10º acumulado e fecharia stuck.
-	time.AfterFunc(190*time.Millisecond, func() { b.connected.Store(true) })
-	time.AfterFunc(210*time.Millisecond, func() { b.connected.Store(false) })
+	time.AfterFunc(950*time.Millisecond, func() { b.connected.Store(true) })
+	time.AfterFunc(1050*time.Millisecond, func() { b.connected.Store(false) })
 
 	select {
 	case <-stuck:
 		t.Fatal("watchGateway fechou stuck com só 1-2 ticks offline após a reconexão — o contador não zerou na volta")
-	case <-time.After(400 * time.Millisecond):
+	case <-time.After(1400 * time.Millisecond):
 		// esperado: stuck segue aberto (o segundo episódio offline é curto
 		// demais para disparar por conta própria)
 	}
