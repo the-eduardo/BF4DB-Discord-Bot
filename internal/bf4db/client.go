@@ -280,19 +280,26 @@ func (c *Client) SearchName(ctx context.Context, name string) ([]Player, error) 
 		return nil, errors.New("bf4db: empty player name")
 	}
 	players, err := c.searchPaged(ctx, requestOptions{noRetryServerError: true}, "player", name, "search")
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.StatusCode < http.StatusInternalServerError {
+	if err == nil {
+		return players, nil
+	}
+	// ctx morto: o fallback so compraria outro timeout.
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return players, err
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode < http.StatusInternalServerError {
+		return players, err // 401/404/4xx sao respostas reais, nao indisponibilidade
 	}
 
 	if !c.webFallback {
-		return nil, fmt.Errorf("%w: %v", ErrNameSearchUnavailable, apiErr)
+		return nil, fmt.Errorf("%w: %v", ErrNameSearchUnavailable, err)
 	}
-	c.notify("The API's by-name endpoint is down (%s); falling back to %s", apiErr.Status, c.webBaseURL.Host)
+	c.notify("The API's by-name endpoint is down (%v); falling back to %s", err, c.webBaseURL.Host)
 
 	players, webErr := c.searchNameWeb(ctx, name, c.nameLimit)
 	if webErr != nil {
-		return nil, fmt.Errorf("%w: API said %v; website fallback: %v", ErrNameSearchUnavailable, apiErr, webErr)
+		return nil, fmt.Errorf("%w: API said %v; website fallback: %v", ErrNameSearchUnavailable, err, webErr)
 	}
 	return players, nil
 }

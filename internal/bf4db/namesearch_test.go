@@ -177,6 +177,48 @@ func TestSearchNameFallsBackOnAnyServerError(t *testing.T) {
 	}
 }
 
+// TestSearchNameFallsBackOnTransportError prova que uma falha que nem chega a
+// virar resposta HTTP (DNS, dial, conexao resetada) tambem aciona o fallback
+// do scraper. Antes deste fix, so um *APIError >=500 disparava o fallback: um
+// erro de transporte (embrulhado em retryableError, sem nenhum APIError na
+// cadeia) fazia errors.As falhar e SearchName devolvia o erro cru, mesmo com
+// o scraper do lado disponivel e pronto para responder.
+func TestSearchNameFallsBackOnTransportError(t *testing.T) {
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, `{"message":"No query results"}`)
+			return
+		}
+		// Fecha a conexao sem responder nada: erro de TRANSPORTE deterministico,
+		// sem status HTTP algum -- exatamente o caso que nao chega a ser
+		// *APIError e que o gate antigo deixava passar batido.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("ResponseWriter nao suporta Hijack")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		conn.Close()
+	})
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, searchPageFixture)
+	})
+
+	// WithMaxRetries(0) e' obrigatorio: sem ele o erro de transporte e'
+	// retryable e o teste dorme defaultRetryWait (60s) antes de desistir.
+	c := newNameSearchClient(t, api, web, WithMaxRetries(0))
+	players, err := c.SearchName(context.Background(), "eduardo")
+	if err != nil {
+		t.Fatalf("SearchName: %v", err)
+	}
+	if len(players) != 3 {
+		t.Fatalf("got %d players, want 3 (fallback deveria ter hidratado o scrape)", len(players))
+	}
+}
+
 func TestSearchNameKeepsStubWhenHydrationFails(t *testing.T) {
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/search") {
