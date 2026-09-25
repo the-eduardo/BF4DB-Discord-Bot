@@ -31,6 +31,14 @@ const defaultRetryDelay = 20 * time.Second
 // fica silencioso de proposito: sao dezenas por dia e nenhum e' incidente.
 const offlineWarnAfter = 3
 
+// offlineErrorAfter e' o tick a partir do qual a queda deixa de ser blip e vira
+// ERROR. 10 (= 10min no intervalo default) casa com o ponto de log que ja
+// existe, entao o volume de log nao muda: so o nivel. Calibrado pelo incidente
+// de 15-16/09/2026 (26h45 = 161 linhas, todas WARN, 0 ERROR no container) e
+// pelo fato de nenhum blip ja observado ter passado de 2 ticks (0 "gateway
+// back" em todo o log da vida do container).
+const offlineErrorAfter = 10
+
 // Pusher periodically reports liveness to an Uptime Kuma push monitor.
 type Pusher struct {
 	url        string
@@ -93,7 +101,11 @@ func (p *Pusher) pushIfAlive(ctx context.Context, alive func() (bool, time.Durat
 		// nao floodar uma queda longa.
 		n := p.offline.Add(1)
 		if n == offlineWarnAfter || (n > offlineWarnAfter && n%10 == 0) {
-			p.log.Warn("gateway offline", "ticks", n, "for", time.Duration(n)*p.interval)
+			if n >= offlineErrorAfter {
+				p.log.Error("gateway offline", "ticks", n, "for", time.Duration(n)*p.interval)
+			} else {
+				p.log.Warn("gateway offline", "ticks", n, "for", time.Duration(n)*p.interval)
+			}
 		}
 		return
 	}
