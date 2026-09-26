@@ -20,10 +20,18 @@ import (
 )
 
 // newTestBot builds a Bot with caches but no Discord session.
+//
+// exit and exitGrace get test-safe defaults (a no-op exit, an exitGrace long
+// enough that no test's wait() call could ever hit it): tests that construct
+// Bot with these helpers exercise wait()'s stuck branch without triggering
+// the real os.Exit escape hatch armed there. Tests that specifically target
+// that escape hatch (watchdog_test.go) override both fields explicitly.
 func newTestBot() *Bot {
 	return &Bot{
 		log:         slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 		timeout:     5 * time.Second,
+		exit:        func(int) {},
+		exitGrace:   time.Hour,
 		lookups:     cache.New[[]bf4db.Player](time.Minute, 50),
 		suggestions: cache.New[[]*discordgo.ApplicationCommandOptionChoice](time.Minute, 50),
 		results:     cache.New[resultSet](time.Minute, 50),
@@ -38,6 +46,8 @@ func newTestBotWithLogs() (*Bot, *bytes.Buffer) {
 	b := &Bot{
 		log:         slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		timeout:     5 * time.Second,
+		exit:        func(int) {},
+		exitGrace:   time.Hour,
 		lookups:     cache.New[[]bf4db.Player](time.Minute, 50),
 		suggestions: cache.New[[]*discordgo.ApplicationCommandOptionChoice](time.Minute, 50),
 		results:     cache.New[resultSet](time.Minute, 50),

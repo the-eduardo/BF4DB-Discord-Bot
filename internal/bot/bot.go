@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -38,6 +39,15 @@ const (
 // ErrGatewayStuck is returned by Run when the watchdog gives up on a gateway
 // that has been offline for longer than offlineFatalAfter*watchdogInterval.
 var ErrGatewayStuck = errors.New("gateway offline beyond recovery window")
+
+// defaultExitGrace bounds how long wait() waits for Run's deferred
+// session.Close() to return before forcing the process out. discordgo's
+// CloseWithCode holds s.wsMutex for a WriteMessage with no write deadline —
+// the same mutex the dead gateway's heartbeat loop can be holding forever —
+// so the decision to give up on a stuck gateway must not depend on Close ever
+// returning. Ten seconds is ample over the tens-of-milliseconds Close takes
+// on a healthy shutdown.
+const defaultExitGrace = 10 * time.Second
 
 // maxMessageChars is Discord's per-MESSAGE embed budget, not per-embed: the API
 // sums title+description+field.name+field.value+footer.text+author.name across
@@ -74,6 +84,12 @@ type Bot struct {
 	// production always gets watchdogInterval (set in New).
 	watchdogInterval time.Duration
 
+	// exit and exitGrace only exist so tests can observe the stuck-gateway
+	// escape hatch without killing the test process; production always gets
+	// os.Exit and defaultExitGrace (set in New).
+	exit      func(int)
+	exitGrace time.Duration
+
 	lookups     *cache.Cache[[]bf4db.Player]
 	suggestions *cache.Cache[[]*discordgo.ApplicationCommandOptionChoice]
 	results     *cache.Cache[resultSet]
@@ -97,6 +113,8 @@ func New(cfg config.Config, client *bf4db.Client, log *slog.Logger) (*Bot, error
 		ipRoleIDs:        cfg.IPRoleIDs,
 		pusher:           kuma.NewPusher(cfg.KumaPushURL, log),
 		watchdogInterval: watchdogInterval,
+		exit:             os.Exit,
+		exitGrace:        defaultExitGrace,
 		lookups:          cache.New[[]bf4db.Player](lookupTTL, lookupMax),
 		suggestions:      cache.New[[]*discordgo.ApplicationCommandOptionChoice](suggestionTTL, suggestionMax),
 		results:          cache.New[resultSet](resultTTL, resultMax),
@@ -181,6 +199,16 @@ func (b *Bot) wait(ctx context.Context, stuck <-chan struct{}, removeCommands bo
 		return nil
 	case <-stuck:
 		b.log.Error("gateway stuck offline", "for", offlineFatalAfter*b.watchdogInterval)
+		// Run's defer calls session.Close(), which can block forever on the
+		// same wsMutex a dead heartbeat loop holds mid-write — leaving this
+		// decision to exit with no way to become an actual process exit.
+		// Arm a forced exit so the shutdown always completes one way or the
+		// other; if Close returns normally first, main's os.Exit(1) runs
+		// well before this fires and the timer dies with the process.
+		time.AfterFunc(b.exitGrace, func() {
+			b.log.Error("shutdown travou, saindo a forca", "grace", b.exitGrace)
+			b.exit(1)
+		})
 		return ErrGatewayStuck
 	}
 }

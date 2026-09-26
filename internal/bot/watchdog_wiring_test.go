@@ -107,6 +107,12 @@ func TestRunWiresGatewayWatchdog(t *testing.T) {
 	}
 	b.session.Client = &http.Client{Transport: &wdRESTTransport{wsURL: "ws" + strings.TrimPrefix(gw.URL, "http")}}
 	b.watchdogInterval = 5 * time.Millisecond
+	// New() arms exit=os.Exit for production; left alone here, the real
+	// os.Exit(1) armed by wait()'s stuck branch would fire ~10s after this
+	// test observes ErrGatewayStuck and kill the whole `go test` binary
+	// whenever it happened to still be running. watchdog_exit_test.go covers
+	// that escape hatch directly with an overridden exit/exitGrace.
+	b.exit = func(int) {}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
