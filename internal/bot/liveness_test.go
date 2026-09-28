@@ -150,6 +150,49 @@ func TestLivenessNaoRessincronizaSemDataReady(t *testing.T) {
 	}
 }
 
+// TestLivenessNaoRessincronizaSemAckMedido: ack nunca medido (valor zero) nao e
+// prova de sessao viva. A segunda das "duas provas independentes" exige um ack
+// RECENTE; ok=false (zero-value) tem de reprovar, senao uma sessao sem nenhuma
+// medicao levantaria connected so porque DataReady esta true.
+func TestLivenessNaoRessincronizaSemAckMedido(t *testing.T) {
+	b := newTestBot()
+	b.connected.Store(false)
+	b.session = &discordgo.Session{DataReady: true}
+
+	if ok, _ := b.liveness(); ok {
+		t.Fatal("liveness() = true sem ack medido e connected=false, want false")
+	}
+	if b.connected.Load() {
+		t.Fatal("liveness() levantou connected sem nenhum ack medido")
+	}
+}
+
+// TestLivenessResyncLogaWarn: a ressincronia tem de ser VISIVEL em producao
+// (nivel WARN, o que chega ao log), senao um julgamento de "sessao viva apesar
+// da flag" fica invisivel e o risco aceito (janela de ate ~5min) nao e
+// auditavel. Contraprova positiva: o caminho normal (connected=true) nao loga.
+func TestLivenessResyncLogaWarn(t *testing.T) {
+	b, buf := newTestBotWithLogs()
+	now := time.Now().UTC()
+	b.connected.Store(true)
+	b.session = &discordgo.Session{DataReady: true, LastHeartbeatSent: now.Add(-150 * time.Millisecond), LastHeartbeatAck: now}
+	if ok, _ := b.liveness(); !ok {
+		t.Fatal("liveness() = false com sessao viva e connected=true")
+	}
+	if strings.Contains(buf.String(), "dessincronizada") {
+		t.Fatalf("caminho normal logou ressincronia: %s", buf.String())
+	}
+
+	b.connected.Store(false)
+	if ok, _ := b.liveness(); !ok {
+		t.Fatal("liveness() = false com sessao viva (DataReady, ack fresco), want true")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "dessincronizada") || !strings.Contains(out, `"level":"WARN"`) {
+		t.Fatalf("ressincronia nao logou WARN visivel em producao; log = %q", out)
+	}
+}
+
 // pingCapturingTransport records the body of every PATCH
 // (InteractionResponseEdit hits the API with PATCH) and answers every request
 // with an empty, valid JSON body so discordgo's response decoding doesn't fail
