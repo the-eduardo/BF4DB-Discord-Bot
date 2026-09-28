@@ -48,7 +48,7 @@ var (
 	// to data-bs-original-title), a banned row still gets flagged banned, it
 	// just loses the reason text instead of losing the verdict entirely.
 	webBanRe      = regexp.MustCompile(`/player/ban/\d+`)
-	webBanTitleRe = regexp.MustCompile(`(?s)/player/ban/\d+.*?data-(?:bs-)?original-title="([^"]*)"`)
+	webBanTitleRe = regexp.MustCompile(`(?s)data-(?:bs-)?original-title="([^"]*)"`)
 )
 
 // searchNameWeb resolves a player name through the website's search page.
@@ -164,9 +164,17 @@ func parseWebSearch(page string) (players []Player, misses int) {
 			Name:     strings.TrimSpace(html.UnescapeString(match[2])),
 			IsBanned: BanNotReported,
 		}
-		if webBanRe.MatchString(row) {
+		if loc := webBanRe.FindStringIndex(row); loc != nil {
 			player.IsBanned = BanActive
-			if title := webBanTitleRe.FindStringSubmatch(row); title != nil {
+			// The tooltip has to live inside the badge's own anchor. Matching
+			// webBanTitleRe against the rest of the row lets a later, unrelated
+			// cell's tooltip (e.g. "last seen") get reported as the ban reason —
+			// worse than losing the reason, since it looks legitimate.
+			badge := row[loc[1]:]
+			if end := strings.Index(badge, "</a"); end >= 0 {
+				badge = badge[:end]
+			}
+			if title := webBanTitleRe.FindStringSubmatch(badge); title != nil {
 				player.BanReason = strings.TrimSpace(html.UnescapeString(title[1]))
 			} else {
 				misses++

@@ -127,6 +127,37 @@ func TestParseWebSearchAcceptsRenamedBootstrapTooltipAttribute(t *testing.T) {
 	}
 }
 
+// TestParseWebSearchIgnoresTooltipOfALaterCell pins the leak webBanTitleRe's
+// unbounded `.*?` allows: it runs against the whole <tr>, so a ban badge with
+// NO tooltip of its own still matches the data-original-title of a later,
+// unrelated cell in the same row (e.g. a "last seen" column) and reports that
+// cell's text as the ban reason. misses must count this as a drift instead.
+func TestParseWebSearchIgnoresTooltipOfALaterCell(t *testing.T) {
+	page := `<html><body><table><tbody>
+<tr>
+  <td class="player-td-image"><a href="/player/1053283869"><img alt="eduardo-chopao"></a></td>
+  <td class="player-td-name"><a href="/player/1053283869"> eduardo-chopao </a></td>
+  <td class="pull-right"><a href="https://bf4db.com/player/ban/1053283869"
+     class="nk-btn">Banned</a></td>
+  <td class="last-seen"><span data-original-title="Visto ha 2 dias">2d</span></td>
+</tr>
+</tbody></table></body></html>`
+
+	players, misses := parseWebSearch(page)
+	if len(players) != 1 {
+		t.Fatalf("got %d players, want 1", len(players))
+	}
+	if !players[0].Banned() {
+		t.Error("row with a ban badge must stay banned")
+	}
+	if players[0].Reason() != "Banned" {
+		t.Errorf("reason = %q, want the Reason() fallback (badge has no tooltip of its own)", players[0].Reason())
+	}
+	if misses != 1 {
+		t.Errorf("misses = %d, want 1", misses)
+	}
+}
+
 // newNameSearchClient wires an API stub and a website stub into one client.
 func newNameSearchClient(t *testing.T, api http.Handler, web http.Handler, opts ...Option) *Client {
 	t.Helper()
