@@ -3,8 +3,14 @@ package bot
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
+	"os"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/config"
 )
 
 // TestWaitStuckArmsForcedExit prova o mecanismo de (OO): quando wait() decide
@@ -74,5 +80,27 @@ func TestWaitCleanShutdownNeverArmsExit(t *testing.T) {
 		t.Fatalf("shutdown limpo armou saída forçada (code %d) — o escape vazou para fora do ramo stuck", code)
 	case <-time.After(200 * time.Millisecond):
 		// esperado: nenhuma saída forçada armada num shutdown normal.
+	}
+}
+
+// TestNewArmsRealExitAndGrace e o teste de FIACAO do escape hatch: os testes
+// acima exercitam wait() com exit/exitGrace injetados, mas em producao quem
+// preenche esses campos e New(). Sem esta checagem, New() poderia deixar
+// exitGrace zerado (o timer dispara na hora) ou trocar os.Exit por um no-op
+// (o escape nunca sai do processo) e a suite continuaria verde.
+//
+// Mutacoes que este teste pega: remover `exitGrace: defaultExitGrace` de New;
+// trocar `exit: os.Exit` por qualquer outra funcao.
+func TestNewArmsRealExitAndGrace(t *testing.T) {
+	b, err := New(config.Config{BotToken: "token-de-teste", Timeout: time.Second},
+		nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if b.exitGrace != defaultExitGrace {
+		t.Errorf("exitGrace = %v, want defaultExitGrace (%v)", b.exitGrace, defaultExitGrace)
+	}
+	if b.exit == nil || reflect.ValueOf(b.exit).Pointer() != reflect.ValueOf(os.Exit).Pointer() {
+		t.Error("New() nao ligou b.exit a os.Exit: o escape do watchdog nao encerraria o processo")
 	}
 }
