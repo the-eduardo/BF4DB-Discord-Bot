@@ -225,13 +225,42 @@ const ackStale = 5 * time.Minute
 // sobre um processo vivo que nao responde mais nada.
 func (b *Bot) liveness() (bool, time.Duration) {
 	if !b.connected.Load() {
-		return false, 0
+		// b.connected so muda nos handlers de Ready/Resumed/Disconnect
+		// (bot.go acima), despachados pelo discordgo em goroutines proprias
+		// sem ordem entre si (SyncEvents fica false, nunca setado aqui). Um
+		// Disconnect entregue DEPOIS do Resumed do mesmo ciclo de reconexao
+		// prende a flag em false para sempre — so outro Ready/Resumed a
+		// levantaria, e watchGateway transforma esse silencio em os.Exit em
+		// offlineFatalAfter*watchdogInterval. Antes de aceitar o false, exige
+		// DUAS provas independentes de sessao viva: o proprio discordgo
+		// marcando o data websocket pronto, e um ack de heartbeat recente.
+		if b.session == nil || !b.dataReady() {
+			return false, 0
+		}
+		age, ok := b.ackAge()
+		if !ok || age > ackStale {
+			return false, 0
+		}
+		b.log.Warn("flag de conexao dessincronizada: sessao viva com connected=false", "ack_age", age.Round(time.Second))
+		b.connected.Store(true)
+		return true, b.heartbeat()
 	}
 	if age, ok := b.ackAge(); ok && age > ackStale {
 		b.log.Warn("gateway conectado mas sem ack de heartbeat", "ack_age", age.Round(time.Second))
 		return false, 0
 	}
 	return true, b.heartbeat()
+}
+
+// dataReady le a flag que o proprio discordgo mantem sobre o data websocket:
+// false assim que CloseWithCode comeca a fechar a conexao, true de novo so
+// depois que o loop de heartbeat conseguiu escrever com sucesso na conexao
+// NOVA (wsapi.go). E o unico sinal, alem do ack, que distingue um gateway
+// vivo de um Disconnect que ainda nao foi processado.
+func (b *Bot) dataReady() bool {
+	b.session.RLock()
+	defer b.session.RUnlock()
+	return b.session.DataReady
 }
 
 // ackAge le o Ack sob o RWMutex da propria sessao — exatamente como o loop de

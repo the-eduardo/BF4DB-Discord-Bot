@@ -134,7 +134,14 @@ func TestRunWiresGatewayWatchdog(t *testing.T) {
 	case <-time.After(20 * offlineFatalAfter * b.watchdogInterval):
 	}
 
-	// Queda sem volta (o que o Disconnect do discordgo faz com a flag).
+	// Queda sem volta (o que o Disconnect do discordgo faz com a flag). Um
+	// CloseWithCode real também zera DataReady ANTES de emitir o Disconnect
+	// (wsapi.go) — sem isso aqui, o gate de ressincronia de liveness() (bot.go)
+	// veria uma sessão com DataReady=true e ack fresco e devolveria o
+	// connected a true sozinho, mascarando esta queda simulada.
+	b.session.Lock()
+	b.session.DataReady = false
+	b.session.Unlock()
 	b.connected.Store(false)
 
 	select {
@@ -144,5 +151,58 @@ func TestRunWiresGatewayWatchdog(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run não voltou com o gateway offline: o watchdog não está ligado em Run")
+	}
+}
+
+// TestWatchdogNaoMataProcessoComFlagDessincronizada prova a fiação ponta a
+// ponta do gate de ressincronia de liveness() (bot.go): quando só a flag
+// b.connected desalinha (sessão real de pé: DataReady=true, ack fresco — o
+// cenário em que um Disconnect é entregue depois do Resumed do mesmo ciclo,
+// já que discordgo despacha os dois em goroutines sem ordem entre si), o
+// watchdog não pode fechar stuck e Run não pode devolver ErrGatewayStuck. Sem
+// o gate, este teste falha do mesmo jeito que TestRunWiresGatewayWatchdog
+// passa: o watchdog mataria um processo com o gateway perfeitamente vivo.
+func TestWatchdogNaoMataProcessoComFlagDessincronizada(t *testing.T) {
+	gw := wdFakeGateway(t)
+	defer gw.Close()
+
+	b, err := New(config.Config{BotToken: "token-de-teste", Timeout: time.Second},
+		nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	b.session.Client = &http.Client{Transport: &wdRESTTransport{wsURL: "ws" + strings.TrimPrefix(gw.URL, "http")}}
+	b.watchdogInterval = 5 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- b.Run(ctx, false) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !b.connected.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("o gateway falso nunca chegou a READY")
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Run voltou antes do READY: %v", err)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// Só a flag desalinha; a sessão real (DataReady, ack) segue viva, como na
+	// corrida entre os handlers de Resumed e Disconnect.
+	b.connected.Store(false)
+
+	select {
+	case err := <-done:
+		t.Fatalf("Run voltou com o gateway de fato vivo: %v (a flag dessincronizada matou o processo)", err)
+	case <-time.After(3 * offlineFatalAfter * b.watchdogInterval):
+		// esperado: liveness() ressincroniza sozinho e o watchdog nunca conta
+		// os ticks necessários para fechar stuck.
+	}
+	if !b.connected.Load() {
+		t.Fatal("connected continuou false: liveness() não ressincronizou a flag")
 	}
 }

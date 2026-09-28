@@ -93,6 +93,63 @@ func TestLivenessAcceptsFreshOrUnmeasuredAck(t *testing.T) {
 	}
 }
 
+// TestLivenessResyncsFlagStuckAtFalse prova o gate de ressincronia:
+// b.connected fica false para sempre se o handler de Disconnect for entregue
+// DEPOIS do handler de Resumed do mesmo ciclo (discordgo despacha os dois em
+// goroutines sem ordem entre si). Com a sessão real de pé (DataReady=true,
+// ack fresco), liveness() tem que perceber e levantar a flag sozinho, em vez
+// de deixar o watchdog matar um processo saudável.
+func TestLivenessResyncsFlagStuckAtFalse(t *testing.T) {
+	b := newTestBot()
+	now := time.Now().UTC()
+	b.connected.Store(false)
+	b.session = &discordgo.Session{DataReady: true, LastHeartbeatSent: now.Add(-150 * time.Millisecond), LastHeartbeatAck: now}
+
+	ok, _ := b.liveness()
+	if !ok {
+		t.Fatal("liveness() = false com sessão viva (DataReady=true, ack fresco), want true (ressincronia)")
+	}
+	if !b.connected.Load() {
+		t.Fatal("liveness() não levantou b.connected de volta a true")
+	}
+}
+
+// TestLivenessNaoRessincronizaComAckVelho é a contraprova do zumbi: sem ela, o
+// gate acima mascararia o incidente de 15-16/09/2026 (sessão com DataReady
+// ainda true mas heartbeats mortos há minutos) como uma simples dessincronia.
+func TestLivenessNaoRessincronizaComAckVelho(t *testing.T) {
+	b := newTestBot()
+	now := time.Now().UTC()
+	b.connected.Store(false)
+	b.session = &discordgo.Session{DataReady: true, LastHeartbeatSent: now.Add(-11 * time.Minute), LastHeartbeatAck: now.Add(-10 * time.Minute)}
+
+	if ok, _ := b.liveness(); ok {
+		t.Fatal("liveness() = true com ack de 10min e connected=false, want false (zumbi real, não ressincronizar)")
+	}
+	if b.connected.Load() {
+		t.Fatal("liveness() levantou connected com ack velho — mascararia o zumbi de 15-16/09")
+	}
+}
+
+// TestLivenessNaoRessincronizaSemDataReady é a segunda contraprova: um
+// Disconnect real zera DataReady (wsapi.go) antes de emitir o próprio evento,
+// então connected=false com DataReady=false é uma queda genuína, não uma
+// corrida entre handlers — não deve ressincronizar mesmo com ack recente
+// (herdado da sessão anterior).
+func TestLivenessNaoRessincronizaSemDataReady(t *testing.T) {
+	b := newTestBot()
+	now := time.Now().UTC()
+	b.connected.Store(false)
+	b.session = &discordgo.Session{DataReady: false, LastHeartbeatSent: now.Add(-150 * time.Millisecond), LastHeartbeatAck: now}
+
+	if ok, _ := b.liveness(); ok {
+		t.Fatal("liveness() = true com DataReady=false, want false (queda genuína)")
+	}
+	if b.connected.Load() {
+		t.Fatal("liveness() levantou connected sem DataReady")
+	}
+}
+
 // pingCapturingTransport records the body of every PATCH
 // (InteractionResponseEdit hits the API with PATCH) and answers every request
 // with an empty, valid JSON body so discordgo's response decoding doesn't fail
