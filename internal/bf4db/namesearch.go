@@ -177,10 +177,17 @@ func parseWebSearch(page string) (players []Player, misses int) {
 			// lido de proposito (decisao de produto pendente); o contador
 			// misses cobre a deriva de layout.
 			badge := row[loc[1]:]
-			if end := strings.Index(badge, "</a>"); end >= 0 {
-				badge = badge[:end]
+			end := strings.Index(badge, "</a>")
+			if end < 0 {
+				// Sem o fechamento do anchor nao da pra delimitar o selo. Cair no
+				// resto da linha reintroduziria o tooltip de celula alheia que
+				// este corte existe pra impedir — e webBanTitleRe ja nao tem mais
+				// a ancora /player/ban que antes limitava o estrago. badge[:0]
+				// faz a busca falhar e cair no misses++, que e o comportamento
+				// documentado: verdicto mantido, motivo perdido, drift sinalizado.
+				end = 0
 			}
-			if title := webBanTitleRe.FindStringSubmatch(badge); title != nil {
+			if title := webBanTitleRe.FindStringSubmatch(badge[:end]); title != nil {
 				player.BanReason = strings.TrimSpace(html.UnescapeString(title[1]))
 			} else {
 				misses++

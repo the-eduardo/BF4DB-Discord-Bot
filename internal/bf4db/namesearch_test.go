@@ -195,6 +195,42 @@ func TestParseWebSearchReasonSurvivesNestedTagStartingWithA(t *testing.T) {
 	}
 }
 
+// TestParseWebSearchBadgeWithoutAnchorCloseIsAMiss: sem "</a>" depois do selo
+// (badge auto-fechado, ou a URL de ban migrando pra <img>/data-url), o recorte
+// nao tem onde parar. Cair no resto da linha inteira reintroduz o tooltip de
+// uma celula alheia (aqui, "last seen") como se fosse o motivo do ban —
+// exatamente o que o corte no anchor existe pra impedir, e pior porque
+// webBanTitleRe ja nao tem mais a ancora /player/ban que antes limitava o
+// estrago. O correto e a busca falhar e contar misses.
+//
+// Mutacao que este teste pega: voltar o corte para o formato antigo (so
+// recortar quando "</a>" aparece; sem ele, buscar no resto da linha inteira),
+// que reintroduz o tooltip da celula alheia.
+func TestParseWebSearchBadgeWithoutAnchorCloseIsAMiss(t *testing.T) {
+	page := `<html><body><table><tbody>
+<tr>
+  <td class="player-td-image"><a href="/player/1053283869"><img alt="x"></a></td>
+  <td class="player-td-name"><a href="/player/1053283869"> x </a></td>
+  <td class="pull-right"><img src="/player/ban/1053283869" class="nk-btn"></td>
+  <td class="last-seen"><span data-original-title="Visto ha 2 dias">2d</span></td>
+</tr>
+</tbody></table></body></html>`
+
+	players, misses := parseWebSearch(page)
+	if len(players) != 1 {
+		t.Fatalf("got %d players, want 1", len(players))
+	}
+	if !players[0].Banned() {
+		t.Error("row with a ban badge must stay banned")
+	}
+	if players[0].BanReason != "" {
+		t.Errorf("BanReason = %q, want \"\" (the tooltip belongs to the last-seen cell, not the badge)", players[0].BanReason)
+	}
+	if misses != 1 {
+		t.Errorf("misses = %d, want 1", misses)
+	}
+}
+
 // newNameSearchClient wires an API stub and a website stub into one client.
 func newNameSearchClient(t *testing.T, api http.Handler, web http.Handler, opts ...Option) *Client {
 	t.Helper()
