@@ -262,47 +262,50 @@ func (b *Bot) liveness() (bool, time.Duration) {
 		// offlineFatalAfter*watchdogInterval. Antes de aceitar o false, exige
 		// DUAS provas independentes de sessao viva: o proprio discordgo
 		// marcando o data websocket pronto, e um ack de heartbeat recente.
-		if b.session == nil || !b.dataReady() {
+		// Lock ocupado (Open/Close em andamento) nao e prova de nada: false.
+		if b.session == nil {
 			return false, 0
 		}
-		age, ok := b.ackAge()
-		if !ok || age > ackStale {
+		ready, age, measured, locked := b.snapshot()
+		if !locked || !measured || !ready || age > ackStale {
 			return false, 0
 		}
 		b.log.Warn("flag de conexao dessincronizada: sessao viva com connected=false", "ack_age", age.Round(time.Second))
 		b.connected.Store(true)
 		return true, b.heartbeat()
 	}
-	if age, ok := b.ackAge(); ok && age > ackStale {
+	_, age, measured, locked := b.snapshot()
+	if !locked {
+		// Open()/CloseWithCode() seguram o lock da sessao sem prazo: sem como
+		// provar que o gateway responde, nao conta como vivo — e o watchdog
+		// segue contando ticks em vez de congelar junto.
+		return false, 0
+	}
+	if measured && age > ackStale {
 		b.log.Warn("gateway conectado mas sem ack de heartbeat", "ack_age", age.Round(time.Second))
 		return false, 0
 	}
 	return true, b.heartbeat()
 }
 
-// dataReady le a flag que o proprio discordgo mantem sobre o data websocket:
-// false assim que CloseWithCode comeca a fechar a conexao, true de novo so
-// depois que o loop de heartbeat conseguiu escrever com sucesso na conexao
-// NOVA (wsapi.go). E o unico sinal, alem do ack, que distingue um gateway
-// vivo de um Disconnect que ainda nao foi processado.
-func (b *Bot) dataReady() bool {
-	b.session.RLock()
-	defer b.session.RUnlock()
-	return b.session.DataReady
-}
-
-// ackAge le o Ack sob o RWMutex da propria sessao — exatamente como o loop de
-// heartbeat do discordgo le o mesmo campo (wsapi.go). ok=false no valor zero,
-// para uma sessao construida como zero-value (ex. em teste) nunca ser lida
-// como morta; em producao discordgo.New ja semeia LastHeartbeatAck=now.
-func (b *Bot) ackAge() (time.Duration, bool) {
-	b.session.RLock()
-	last := b.session.LastHeartbeatAck
+// snapshot le DataReady e a idade do ack SEM bloquear: Open() e CloseWithCode()
+// seguram s.Lock() durante I/O sem deadline (wsapi.go), e um RLock aqui
+// congelaria watchGateway e o pusher junto. Le sob o RWMutex da propria
+// sessao — exatamente como o loop de heartbeat do discordgo le os mesmos
+// campos. locked=false: lock ocupado, nada foi lido. measured=false no valor
+// zero de LastHeartbeatAck, para uma sessao construida como zero-value (ex.
+// em teste) nunca ser lida como morta; em producao discordgo.New ja semeia
+// LastHeartbeatAck=now.
+func (b *Bot) snapshot() (ready bool, age time.Duration, measured, locked bool) {
+	if !b.session.TryRLock() {
+		return false, 0, false, false
+	}
+	ready, last := b.session.DataReady, b.session.LastHeartbeatAck
 	b.session.RUnlock()
 	if last.IsZero() {
-		return 0, false
+		return ready, 0, false, true
 	}
-	return time.Since(last), true
+	return ready, time.Since(last), true, true
 }
 
 // heartbeat reports the last heartbeat latency, never negative: discordgo

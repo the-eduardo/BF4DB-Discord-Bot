@@ -158,6 +158,43 @@ func TestParseWebSearchIgnoresTooltipOfALaterCell(t *testing.T) {
 	}
 }
 
+// TestParseWebSearchReasonSurvivesNestedTagStartingWithA: o corte do anchor do
+// selo tem de ser o fechamento REAL `</a>`. Cortar em `</a` casa tambem
+// `</abbr`, `</aside`, `</address` e `</audio`: com um elemento desses DENTRO do
+// anchor antes do tooltip, o corte cai cedo demais e o motivo do ban se perde
+// (verdicto mantido, misses++ falso). O tooltip aqui mora num <span> dentro do
+// anchor, depois do elemento aninhado.
+//
+// Mutacao que este teste pega: voltar strings.Index(badge, "</a>") para
+// "</a" em parseWebSearch.
+func TestParseWebSearchReasonSurvivesNestedTagStartingWithA(t *testing.T) {
+	for _, tag := range []string{"abbr", "aside", "address", "audio"} {
+		t.Run(tag, func(t *testing.T) {
+			page := `<html><body><table><tbody>
+<tr>
+  <td class="player-td-image"><a href="/player/1053283869"><img alt="x"></a></td>
+  <td class="player-td-name"><a href="/player/1053283869"> x </a></td>
+  <td class="pull-right"><a href="/player/ban/1053283869"><` + tag + ` title="ban">B</` + tag + `> <span data-original-title="Aimbot">Banned</span></a></td>
+</tr>
+</tbody></table></body></html>`
+
+			players, misses := parseWebSearch(page)
+			if len(players) != 1 {
+				t.Fatalf("got %d players, want 1", len(players))
+			}
+			if !players[0].Banned() {
+				t.Fatalf("player = %+v, want banned", players[0])
+			}
+			if players[0].BanReason != "Aimbot" {
+				t.Errorf("BanReason = %q, want %q (tooltip inside the badge anchor, after a <%s>)", players[0].BanReason, "Aimbot", tag)
+			}
+			if misses != 0 {
+				t.Errorf("misses = %d, want 0 (o tooltip esta dentro do anchor)", misses)
+			}
+		})
+	}
+}
+
 // newNameSearchClient wires an API stub and a website stub into one client.
 func newNameSearchClient(t *testing.T, api http.Handler, web http.Handler, opts ...Option) *Client {
 	t.Helper()

@@ -28,13 +28,15 @@ import (
 // timeout.
 func TestWaitStuckArmsForcedExit(t *testing.T) {
 	b := newTestBot()
-	b.exitGrace = 50 * time.Millisecond
+	const grace = 300 * time.Millisecond
+	b.exitGrace = grace
 	exited := make(chan int, 1)
 	b.exit = func(code int) { exited <- code }
 
 	stuck := make(chan struct{})
 	close(stuck)
 
+	start := time.Now()
 	err := b.wait(context.Background(), stuck, false, nil)
 	if !errors.Is(err, ErrGatewayStuck) {
 		t.Fatalf("wait() err = %v, want ErrGatewayStuck", err)
@@ -42,6 +44,16 @@ func TestWaitStuckArmsForcedExit(t *testing.T) {
 
 	// Dublê do defer b.session.Close() travado para sempre: wait() já voltou,
 	// e o processo real ficaria bloqueado aqui até o escape disparar.
+	//
+	// O grace tem de ser RESPEITADO, não só o disparo: uma saída imediata
+	// (AfterFunc(0) ou `go b.exit(1)`) mataria o processo no meio de um
+	// Close() que ainda poderia terminar limpo. Nenhuma saída antes de 100ms
+	// (1/3 do grace), e a saída tem de vir antes de 2s.
+	select {
+	case code := <-exited:
+		t.Fatalf("exit(%d) disparou %v depois do stuck, antes do grace (%v) — a saída forçada ignorou exitGrace", code, time.Since(start), grace)
+	case <-time.After(100 * time.Millisecond):
+	}
 	select {
 	case code := <-exited:
 		if code != 1 {
@@ -97,8 +109,11 @@ func TestNewArmsRealExitAndGrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if b.exitGrace != defaultExitGrace {
-		t.Errorf("exitGrace = %v, want defaultExitGrace (%v)", b.exitGrace, defaultExitGrace)
+	// Faixa ABSOLUTA, nao a propria constante (tautologia: defaultExitGrace=1ms
+	// ou =10h passavam). Abaixo de 5s o grace corta um Close() saudavel; acima
+	// de 60s o zumbi fica vivo tempo demais depois de o watchdog decidir sair.
+	if b.exitGrace < 5*time.Second || b.exitGrace > 60*time.Second {
+		t.Errorf("exitGrace = %v, want entre 5s e 60s", b.exitGrace)
 	}
 	if b.exit == nil || reflect.ValueOf(b.exit).Pointer() != reflect.ValueOf(os.Exit).Pointer() {
 		t.Error("New() nao ligou b.exit a os.Exit: o escape do watchdog nao encerraria o processo")

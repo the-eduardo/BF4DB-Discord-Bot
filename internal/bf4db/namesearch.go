@@ -170,8 +170,14 @@ func parseWebSearch(page string) (players []Player, misses int) {
 			// webBanTitleRe against the rest of the row lets a later, unrelated
 			// cell's tooltip (e.g. "last seen") get reported as the ban reason —
 			// worse than losing the reason, since it looks legitimate.
+			//
+			// O corte e no fechamento real "</a>": "</a" casaria tambem
+			// </abbr>, </aside>, </address> e </audio> aninhados no anchor e
+			// perderia o motivo. Tooltip em elemento IRMAO fora do anchor nao e
+			// lido de proposito (decisao de produto pendente); o contador
+			// misses cobre a deriva de layout.
 			badge := row[loc[1]:]
-			if end := strings.Index(badge, "</a"); end >= 0 {
+			if end := strings.Index(badge, "</a>"); end >= 0 {
 				badge = badge[:end]
 			}
 			if title := webBanTitleRe.FindStringSubmatch(badge); title != nil {
