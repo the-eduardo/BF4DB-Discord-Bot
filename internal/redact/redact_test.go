@@ -30,6 +30,18 @@ func TestStringMasksUrlBorneSecrets(t *testing.T) {
 			secret: "INTERACTIONTOK",
 			keep:   "/webhooks/1027015041326788659/",
 		},
+		{
+			name:   "bf4db search-by-name/IP route",
+			in:     `Get "https://bf4db.com/api/player/203.0.113.77/search?api_token=REDACTED": dial tcp: i/o timeout`,
+			secret: "203.0.113.77",
+			keep:   "/player/REDACTED/search",
+		},
+		{
+			name:   "bf4db web search-page query param",
+			in:     `Get "http://127.0.0.1:41234/player/search?query=Some%20Player": connection refused`,
+			secret: "Some%20Player",
+			keep:   "query=REDACTED",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := String(tc.in)
@@ -59,6 +71,8 @@ func TestStringKeepsPathAfterInteractionEditToken(t *testing.T) {
 }
 
 func TestStringLeavesInnocentTextAlone(t *testing.T) {
+	// Also the regression guard for the /player/.../search pattern: without
+	// the /search anchor, this route (no /search suffix) would get eaten too.
 	in := `Get "https://bf4db.com/player/988768601": timeout`
 	if got := String(in); got != in {
 		t.Errorf("rewrote a URL with no secret in it: %s", got)
