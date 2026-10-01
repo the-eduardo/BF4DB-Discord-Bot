@@ -14,6 +14,7 @@ import (
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/bf4db"
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/bot"
 	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/config"
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
 )
 
 // version is overwritten at build time via -ldflags "-X main.version=...".
@@ -41,9 +42,7 @@ func main() {
 		bf4db.WithBaseURL(cfg.BaseURL),
 		bf4db.WithWebBaseURL(cfg.WebURL),
 		bf4db.WithNameLimit(cfg.NameLimit),
-		bf4db.WithNotifier(func(format string, args ...any) {
-			log.Info(fmt.Sprintf(format, args...), "source", "bf4db")
-		}),
+		bf4db.WithNotifier(bf4dbNotifier(log)),
 		bf4db.WithLogger(log),
 	)
 	if err != nil {
@@ -69,6 +68,16 @@ func main() {
 
 func logStartup(log *slog.Logger) {
 	log.Info("starting", "version", version)
+}
+
+// bf4dbNotifier logs the client's progress messages. client.go:304 passes it
+// the raw error from a by-name search, and a transport failure's *url.Error
+// carries the searched name inside the BF4DB request path, so the text must
+// go through redact before it reaches the structured log.
+func bf4dbNotifier(log *slog.Logger) func(format string, args ...any) {
+	return func(format string, args ...any) {
+		log.Info(redact.String(fmt.Sprintf(format, args...)), "source", "bf4db")
+	}
 }
 
 // loadConfig reads and validates the environment, logging failures through
