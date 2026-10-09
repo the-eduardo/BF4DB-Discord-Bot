@@ -97,6 +97,18 @@ func searchInteraction(opts ...*discordgo.ApplicationCommandInteractionDataOptio
 	}}
 }
 
+// searchInteractionResolved é searchInteraction com o campo Resolved
+// preenchido, reproduzindo o payload real que o Discord manda junto de uma
+// opção USER — é esse campo que resolvedUser lê em vez de disparar
+// opt.UserValue(s).
+func searchInteractionResolved(resolved *discordgo.ApplicationCommandInteractionDataResolved, opts ...*discordgo.ApplicationCommandInteractionDataOption) *discordgo.InteractionCreate {
+	ic := searchInteraction(opts...)
+	data := ic.Data.(discordgo.ApplicationCommandInteractionData)
+	data.Resolved = resolved
+	ic.Data = data
+	return ic
+}
+
 // Fiação, não só a função pura: se alguém trocar searchOptions(...) de volta
 // pelo laço antigo direto em handleSearch (commands.go:73), o teste acima
 // continua verde e este é quem quebra. b.client fica nil de propósito — se a
@@ -372,13 +384,17 @@ func TestHandleSearchRealQueryIsNotDropped(t *testing.T) {
 // discordSessionTransport intercepta as chamadas do discordgo.Session (usadas
 // por opt.UserValue para resolver o usuário) sem deixar nada sair para a rede;
 // tudo que não é /users/{id} cai no comportamento de recordingTransport.
+// userCalls conta quantas vezes /users/{id} foi batido — serve pra provar que
+// resolvedUser, com Resolved preenchido, não faz esse REST extra.
 type discordSessionTransport struct {
-	rt       *recordingTransport
-	username string
+	rt        *recordingTransport
+	username  string
+	userCalls int
 }
 
 func (t *discordSessionTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if strings.Contains(req.URL.Path, "/users/") {
+		t.userCalls++
 		body := fmt.Sprintf(`{"id":%q,"username":%q}`, strings.TrimPrefix(req.URL.Path[strings.LastIndex(req.URL.Path, "/"):], "/"), t.username)
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -440,5 +456,109 @@ func TestHandleSearchDiscordOptionGetsOwnDeadline(t *testing.T) {
 	}
 	if strings.Contains(logged, `"msg":"discord search failed"`) {
 		t.Fatalf("log contém \"discord search failed\" — discord-user deveria ter seu próprio orçamento\nlogs:\n%s", logged)
+	}
+}
+
+// TestHandleSearchDiscordUserUsesResolvedPayload prova que discord-user lê o
+// usuário do payload da interação (data.Resolved.Users) em vez de disparar
+// opt.UserValue(s), que faria um GET /users/{id} à API do Discord. Mutação
+// que reproduz o defeito: trocar resolvedUser(s, data, opt) de volta para
+// opt.UserValue(s) em commands.go faz userCalls virar 1 e o título do embed
+// vem do transporte ("OUTRO") em vez do payload resolvido ("fulano-resolvido").
+func TestHandleSearchDiscordUserUsesResolvedPayload(t *testing.T) {
+	b, logs := newTestBotWithLogs()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"player_id":1,"name":"X","is_banned":2}]}`)
+	}))
+	defer api.Close()
+
+	client, err := bf4db.New(strings.Repeat("a", 64), bf4db.WithBaseURL(api.URL+"/api"))
+	if err != nil {
+		t.Fatalf("bf4db.New: %v", err)
+	}
+	b.client = client
+
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	rt := &recordingTransport{}
+	// username "OUTRO" é o que /users/{id} devolveria SE fosse chamado — o
+	// teste prova que o título não vem daqui.
+	transport := &discordSessionTransport{rt: rt, username: "OUTRO"}
+	s.Client = &http.Client{Transport: transport}
+
+	b.handleSearch(s, searchInteractionResolved(
+		&discordgo.ApplicationCommandInteractionDataResolved{
+			Users: map[string]*discordgo.User{
+				"987654321": {ID: "987654321", Username: "fulano-resolvido"},
+			},
+		},
+		userOption(optionDiscord, "987654321"),
+	))
+
+	if transport.userCalls != 0 {
+		t.Fatalf("GET /users/{id} chamado %d vez(es) — discord-user deveria usar o payload resolvido, não a API do Discord", transport.userCalls)
+	}
+
+	logged := logs.String()
+	if !strings.Contains(logged, `"msg":"discord search done"`) {
+		t.Fatalf("log não contém \"discord search done\" — controle positivo de que a busca rodou\nlogs:\n%s", logged)
+	}
+
+	if len(rt.bodies) != 2 {
+		t.Fatalf("handleSearch mandou %d respostas, want 2 (defer + edit)", len(rt.bodies))
+	}
+	edit := string(rt.bodies[1])
+	if !strings.Contains(edit, "fulano-resolvido") {
+		t.Fatalf("edit não contém o nome resolvido pelo payload da interação\nedit:\n%s", edit)
+	}
+	if strings.Contains(edit, "OUTRO") {
+		t.Fatalf("edit contém o nome que só a chamada REST (não disparada) devolveria\nedit:\n%s", edit)
+	}
+}
+
+// TestHandleSearchDiscordUserFallsBackWithoutResolved prova a rede de
+// segurança: sem Resolved (ou sem o id dentro dele), resolvedUser cai para
+// opt.UserValue(s) — o comportamento de hoje continua funcionando.
+func TestHandleSearchDiscordUserFallsBackWithoutResolved(t *testing.T) {
+	b, logs := newTestBotWithLogs()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"player_id":1,"name":"X","is_banned":2}]}`)
+	}))
+	defer api.Close()
+
+	client, err := bf4db.New(strings.Repeat("a", 64), bf4db.WithBaseURL(api.URL+"/api"))
+	if err != nil {
+		t.Fatalf("bf4db.New: %v", err)
+	}
+	b.client = client
+
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	rt := &recordingTransport{}
+	transport := &discordSessionTransport{rt: rt, username: "fulano-via-api"}
+	s.Client = &http.Client{Transport: transport}
+
+	// searchInteraction (sem Resolved) é o caso sem payload resolvido.
+	b.handleSearch(s, searchInteraction(userOption(optionDiscord, "987654321")))
+
+	if transport.userCalls != 1 {
+		t.Fatalf("GET /users/{id} chamado %d vez(es), want 1 — sem Resolved, o fallback para opt.UserValue(s) deveria ter rodado", transport.userCalls)
+	}
+
+	logged := logs.String()
+	if !strings.Contains(logged, `"msg":"discord search done"`) {
+		t.Fatalf("log não contém \"discord search done\"\nlogs:\n%s", logged)
+	}
+	if len(rt.bodies) != 2 {
+		t.Fatalf("handleSearch mandou %d respostas, want 2 (defer + edit)", len(rt.bodies))
+	}
+	if !strings.Contains(string(rt.bodies[1]), "fulano-via-api") {
+		t.Fatalf("edit não contém o nome vindo do fallback REST\nedit:\n%s", string(rt.bodies[1]))
 	}
 }

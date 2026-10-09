@@ -72,7 +72,8 @@ func (b *Bot) handlePing(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	options := searchOptions(i.ApplicationCommandData())
+	data := i.ApplicationCommandData()
+	options := searchOptions(data)
 
 	if len(options) == 0 {
 		b.respond(s, i, &discordgo.MessageEmbed{
@@ -144,9 +145,13 @@ func (b *Bot) handleSearch(s *discordgo.Session, i *discordgo.InteractionCreate)
 	}
 
 	if opt, ok := options[optionDiscord]; ok {
+		// Discord já manda o usuário resolvido no payload da interação
+		// (data.Resolved.Users); ler daí evita um GET /users/{id} redundante
+		// que opt.UserValue faria — sem ctx e já depois do relógio do timeout
+		// ter começado, comendo o orçamento que devia ir pro SearchDiscord.
+		user := resolvedUser(s, data, opt)
 		ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 
-		user := opt.UserValue(s)
 		title := fmt.Sprintf("Contas de %s", sanitize(user.Username))
 
 		players, err := b.client.SearchDiscord(ctx, user.ID)
@@ -177,6 +182,20 @@ func searchOptions(data discordgo.ApplicationCommandInteractionData) map[string]
 		options[opt.Name] = opt
 	}
 	return options
+}
+
+// resolvedUser reads the user Discord already resolved for a USER option
+// (data.Resolved.Users) instead of opt.UserValue(s), que faria um GET
+// /users/{id} à API do Discord — redundante, sem ctx, e capaz de consumir o
+// timeout da busca antes mesmo de SearchDiscord rodar. Cai de volta no
+// UserValue de hoje se o id não estiver em Resolved.
+func resolvedUser(s *discordgo.Session, data discordgo.ApplicationCommandInteractionData, opt *discordgo.ApplicationCommandInteractionDataOption) *discordgo.User {
+	if id, ok := opt.Value.(string); ok && data.Resolved != nil {
+		if user, ok := data.Resolved.Users[id]; ok {
+			return user
+		}
+	}
+	return opt.UserValue(s)
 }
 
 // paginated renders the first page and, when there is more, keeps the full
