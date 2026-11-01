@@ -797,3 +797,76 @@ func TestSearchNameUsesAPIWhenItWorks(t *testing.T) {
 		t.Error("website must not be used while the API works")
 	}
 }
+
+// TestSearchNameWarnsWhenHydrationIsDegraded proves hydrate() stops failing
+// silently: before this, a flaky /api/player/{id} (401, 429, 5xx, a broken
+// decode) left the caller with the scraped stub and zero signal anywhere in
+// the log, because hydrate() itself never returns an error.
+func TestSearchNameWarnsWhenHydrationIsDegraded(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprint(w, `{"message":"No query results"}`)
+	})
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, searchPageFixture)
+	})
+
+	c := newNameSearchClient(t, api, web, WithLogger(log), WithMaxRetries(0))
+	players, err := c.SearchName(context.Background(), "jogador-sigiloso")
+	if err != nil {
+		t.Fatalf("SearchName: %v", err)
+	}
+	if len(players) != 3 {
+		t.Fatalf("got %d players, want the 3 scraped stubs", len(players))
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "bf4db hydrate degraded") {
+		t.Fatalf("expected a WARN log for the degraded hydrate, got: %q", out)
+	}
+	if !strings.Contains(out, "total=3") || !strings.Contains(out, "failed=3") {
+		t.Errorf("log line missing total/failed fields: %q", out)
+	}
+	if strings.Contains(out, "jogador-sigiloso") {
+		t.Errorf("log line leaks the searched name: %q", out)
+	}
+}
+
+// TestSearchNameDoesNotWarnWhenHydrationFullySucceeds is the contraprova of
+// TestSearchNameWarnsWhenHydrationIsDegraded: a healthy API must not add any
+// "hydrate degraded" noise to the log.
+func TestSearchNameDoesNotWarnWhenHydrationFullySucceeds(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/player/")
+		_, _ = fmt.Fprintf(w, `{"data":{"player_id":%s,"name":"hydrated-%s","is_banned":2}}`, id, id)
+	})
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, searchPageFixture)
+	})
+
+	c := newNameSearchClient(t, api, web, WithLogger(log))
+	players, err := c.SearchName(context.Background(), "eduardo")
+	if err != nil {
+		t.Fatalf("SearchName: %v", err)
+	}
+	if len(players) != 3 {
+		t.Fatalf("got %d players, want 3", len(players))
+	}
+	if strings.Contains(buf.String(), "bf4db hydrate degraded") {
+		t.Errorf("expected no degraded-hydrate log on a fully healthy API, got: %q", buf.String())
+	}
+}
