@@ -1,6 +1,7 @@
 package bf4db
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"html"
@@ -9,7 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
+
+	"github.com/the-eduardo/BF4DB-Discord-Bot/internal/redact"
 )
 
 // DefaultWebBaseURL is the site root used for the by-name fallback.
@@ -205,8 +209,11 @@ func (c *Client) hydrate(ctx context.Context, stubs []Player) []Player {
 	copy(players, stubs)
 
 	var (
-		wg   sync.WaitGroup
-		work = make(chan int)
+		wg       sync.WaitGroup
+		work     = make(chan int)
+		hydrated atomic.Int64
+		firstErr error
+		errOnce  sync.Once
 	)
 	for range min(hydrateWorkers, len(stubs)) {
 		wg.Add(1)
@@ -218,6 +225,9 @@ func (c *Client) hydrate(ctx context.Context, stubs []Player) []Player {
 				// for retries × backoff × results.
 				full, err := c.player(ctx, strconv.Itoa(players[i].PersonaID()), requestOptions{attempts: 1})
 				if err != nil || full.PersonaID() == 0 {
+					if err != nil {
+						errOnce.Do(func() { firstErr = err })
+					}
 					continue
 				}
 				if full.Name == "" {
@@ -235,6 +245,7 @@ func (c *Client) hydrate(ctx context.Context, stubs []Player) []Player {
 					}
 				}
 				players[i] = full
+				hydrated.Add(1)
 			}
 		}()
 	}
@@ -246,6 +257,14 @@ func (c *Client) hydrate(ctx context.Context, stubs []Player) []Player {
 	}
 	close(work)
 	wg.Wait()
+
+	// A linha não tentada quando o ctx expira (o loop acima para antes de
+	// mandar todo i pro work channel) também nunca incrementa hydrated, então
+	// entra na conta de failed sem precisar de tratamento especial.
+	if failed := int64(len(stubs)) - hydrated.Load(); failed > 0 {
+		c.log.Warn("bf4db hydrate degraded", "total", len(stubs), "failed", failed,
+			"err", redact.Err(cmp.Or(firstErr, ctx.Err())))
+	}
 
 	return players
 }
