@@ -870,3 +870,45 @@ func TestSearchNameDoesNotWarnWhenHydrationFullySucceeds(t *testing.T) {
 		t.Errorf("expected no degraded-hydrate log on a fully healthy API, got: %q", buf.String())
 	}
 }
+
+// TestSearchNameWarnsOnPartialHydrationWithCause covers what the all-fail test
+// cannot: one bad row among healthy ones must still warn (failed=1, not
+// silence), and the line must carry the cause instead of err=<nil>.
+// Written by the drenagem of 03/11/2026 after mutations "failed > 1" and
+// "firstErr never recorded" survived the original tests.
+func TestSearchNameWarnsOnPartialHydrationWithCause(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/player/")
+		if id == "172015112" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"data":{"player_id":%s,"name":"hydrated-%s","is_banned":2}}`, id, id)
+	})
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, searchPageFixture)
+	})
+
+	c := newNameSearchClient(t, api, web, WithLogger(log), WithMaxRetries(0))
+	players, err := c.SearchName(context.Background(), "eduardo")
+	if err != nil {
+		t.Fatalf("SearchName: %v", err)
+	}
+	if len(players) != 3 {
+		t.Fatalf("got %d players, want 3", len(players))
+	}
+	out := buf.String()
+	if !strings.Contains(out, "bf4db hydrate degraded") || !strings.Contains(out, "total=3") || !strings.Contains(out, "failed=1") {
+		t.Fatalf("expected WARN with total=3 failed=1 for one bad row, got: %q", out)
+	}
+	if strings.Contains(out, "err=<nil>") || !strings.Contains(out, "500") {
+		t.Errorf("degraded line must carry the cause (HTTP 500), got: %q", out)
+	}
+}
