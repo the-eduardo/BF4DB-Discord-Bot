@@ -280,12 +280,24 @@ func (c *Client) SearchIP(ctx context.Context, ip string) ([]Player, error) {
 // When it fails, the website's own search page is used instead and every hit is
 // hydrated back through the API, which is what makes by-name search work at all
 // today. Disable that with WithWebFallback(false).
+//
+// The name is the only free-form value this client ever puts in a request
+// PATH (the IP, the persona id and the Discord id are all validated by their
+// callers first), and endpoint() hands it to url.URL.JoinPath, which treats
+// each element as ALREADY escaped and runs path.Join over them. Without
+// PathEscape a name carrying "/" or ".." rewrites the route itself — "a/../../x"
+// becomes GET /api/x/search, an arbitrary bf4db.com endpoint called with the
+// bot's token — and an invalid "%" escape (e.g. "a%zz") makes setPath fail
+// silently, sending the request to bare /api. Escaping also keeps the name in
+// ONE path segment, which is what internal/redact's /player/{x}/search pattern
+// needs to mask it when a transport failure logs the URL. For real BF4 names
+// PathEscape is a no-op, so nothing changes for valid input.
 func (c *Client) SearchName(ctx context.Context, name string) ([]Player, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("bf4db: empty player name")
 	}
-	players, err := c.searchPaged(ctx, requestOptions{noRetryServerError: true}, "player", name, "search")
+	players, err := c.searchPaged(ctx, requestOptions{noRetryServerError: true}, "player", url.PathEscape(name), "search")
 	if err == nil {
 		return players, nil
 	}

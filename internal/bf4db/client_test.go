@@ -271,6 +271,44 @@ func TestSearchNameDoesNotRetryTheAPIOutage(t *testing.T) {
 	}
 }
 
+// TestSearchNameKeepsTheNameInOneSegment pins the escaping of the only
+// free-form value this client puts in a request path. endpoint() feeds
+// url.URL.JoinPath, which treats each element as already escaped and runs
+// path.Join: a raw name is therefore able to REWRITE the route, not just the
+// value inside it.
+//
+// The "a/../../x" case is the one that matters — unescaped it collapses to
+// /api/x/search, an arbitrary bf4db.com endpoint reached with the bot's
+// api_token. The plain-name case is the regression guard: escaping must stay a
+// no-op for the names people actually type, with no double-encoding.
+func TestSearchNameKeepsTheNameInOneSegment(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"Savork", "/api/player/Savork/search"},
+		{"a/../../x", "/api/player/a%2F..%2F..%2Fx/search"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath string
+			// WithWebFallback(false): this test is about the API route only,
+			// and the website fallback would answer for a failure that never
+			// happens here anyway.
+			c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.EscapedPath()
+				_, _ = fmt.Fprint(w, `{"data":[],"meta":{"last_page":1}}`)
+			}), WithWebFallback(false))
+
+			if _, err := c.SearchName(context.Background(), tc.name); err != nil {
+				t.Fatalf("SearchName(%q): %v", tc.name, err)
+			}
+			if gotPath != tc.want {
+				t.Errorf("path = %q, want %q", gotPath, tc.want)
+			}
+		})
+	}
+}
+
 func TestServerErrorsAreRetriedForOtherLookups(t *testing.T) {
 	var calls atomic.Int32
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
