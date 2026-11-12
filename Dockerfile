@@ -3,7 +3,7 @@
 # Build stage. TARGETARCH comes from buildx, so the same Dockerfile produces
 # amd64 and arm64 images — the old build hardcoded amd64 and would not run on
 # an ARM host.
-FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
