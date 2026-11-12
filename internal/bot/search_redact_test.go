@@ -79,6 +79,88 @@ func TestHandleSearchNeverLogsTheSearchedIP(t *testing.T) {
 	}
 }
 
+// TestHandleSearchNeverLogsANameWithASlash is the wiring test for the other
+// half of the same leak: pattern 4 of internal/redact (/player/{x}/search)
+// only masks ONE path segment, so it depends on the bf4db client keeping the
+// searched name inside one segment. Before url.PathEscape was applied in
+// SearchName, a name carrying "/" spread across two segments
+// (/api/player/zzSegredoA/zzSegredoB/search), the pattern stopped matching and
+// a transport failure logged the name in clear text.
+//
+// BOTH servers are closed before the call: the API one so its failure is a
+// transport-level *url.Error (the only error that carries the full URL), and
+// the website one so the fallback cannot swallow the failure and return before
+// handleSearch logs it.
+func TestHandleSearchNeverLogsANameWithASlash(t *testing.T) {
+	// Two distinct markers, one per path segment: with a single marker, a
+	// pattern that masked only the first half would still look clean.
+	const name = "zzSegredoA/zzSegredoB"
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	api.Close()
+
+	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	web.Close()
+
+	b, buf := newTestBotWithLogs()
+	client, err := bf4db.New(strings.Repeat("a", 64),
+		bf4db.WithBaseURL(api.URL+"/api"),
+		// Without this the fallback would hit the real bf4db.com.
+		bf4db.WithWebBaseURL(web.URL),
+		bf4db.WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatalf("bf4db.New: %v", err)
+	}
+	b.client = client
+
+	rt := &recordingTransport{}
+	s, err := discordgo.New("Bot token-de-teste")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	s.Client = &http.Client{Transport: rt}
+
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		Type:  discordgo.InteractionApplicationCommand,
+		ID:    "1",
+		AppID: "2",
+		Token: "tok",
+		Data: discordgo.ApplicationCommandInteractionData{
+			Name: "bf4db",
+			Options: []*discordgo.ApplicationCommandInteractionDataOption{
+				{
+					Name:  optionSearch,
+					Type:  discordgo.ApplicationCommandOptionString,
+					Value: name,
+				},
+			},
+		},
+		Member: &discordgo.Member{Permissions: discordgo.PermissionManageServer},
+	}}
+
+	b.handleSearch(s, i)
+
+	out := buf.String()
+	for _, marker := range []string{"zzSegredoA", "zzSegredoB"} {
+		if strings.Contains(out, marker) {
+			t.Errorf("the searched name leaked into the log (%s): %s", marker, out)
+		}
+	}
+	// Positive controls: without them, "the name is absent" and "nothing got
+	// logged at all" would look identical.
+	if !strings.Contains(out, `"msg":"search failed"`) {
+		t.Fatalf("the failure was not logged at all, so the assertion above proves nothing: %s", out)
+	}
+	if !strings.Contains(out, `"query_kind":"name"`) {
+		t.Errorf("expected query_kind=name alongside the redacted error: %s", out)
+	}
+}
+
 // TestHandleSearchNeverLogsTheSearchedName is the wiring test for pattern 5
 // of internal/redact ("?query="): it is the only pattern that masks the name
 // a transport failure leaks on the website fallback, which is production's
